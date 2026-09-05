@@ -5,22 +5,11 @@ library(spdep)       # Loaded first to prevent namespace conflict with bslib
 library(shiny)
 library(bslib)
 library(bsicons)
-library(leaflet)
-library(plotly)
+library(leaflet)     # also supplies the %>% pipe used below
 library(DT)
-library(sf)
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(readr)
-library(stringr)
-library(fastDummies)
+library(sf)          # required by mgm_spatial_core.R
 library(mgm)
 library(qgraph)
-library(igraph)
-library(visNetwork)
-library(htmlwidgets)
-library(htmltools)
 
 # Explicitly assign bslib card elements to resolve conflicts with spdep::card
 card <- bslib::card
@@ -42,6 +31,12 @@ find_app_file <- function(filename) {
   return(NULL)
 }
 
+# Length-safe default. An eventReactive with ignoreNULL = FALSE runs at
+# start-up, and a sidebar input on a nav_panel that has not been opened yet can
+# still be NULL or zero-length at that instant. Passing that straight into a
+# model call is what produced "Error in : : argument of length 0".
+`%|z|%` <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
+
 # --- ANALYSIS ARTEFACTS FOR THE SPATIAL & MGM EXPLORER SECTIONS ---
 # These two sections read objects produced by the analysis pipeline rather than
 # recomputing them from the CSV. Located with the same find_app_file() helper
@@ -57,6 +52,157 @@ find_app_file <- function(filename) {
 SPATIAL_CORE   <- "mgm_spatial_core.R"
 SPATIAL_BUNDLE <- "mgm_spatial_bundle.rds"
 MGM_OBJECT     <- file.path("output", "AIARMS_mgm_spatial.rds")
+
+# --- SELF-BUILDING PIPELINE ------------------------------------------------
+# Builds the analysis artefacts on first launch. Deliberately restricted to
+# interactive sessions with a writable app folder:
+#
+#   * On a published server (Connect Cloud, shinyapps.io) the session is not
+#     interactive, the app directory should not be treated as writable, and
+#     spawning an Rscript subprocess is not something to rely on. Deployed
+#     copies must therefore ship the .rds artefacts alongside app.R.
+#   * Locally, runApp() from the console or the Run App button is interactive,
+#     so the build still happens automatically.
+#
+# Force it either way by setting this to TRUE or FALSE by hand.
+BUILD_ON_START <- interactive() && file.access(".", 2L) == 0L
+
+# The two cleaning steps may exist either as standalone .R scripts or only as
+# chunks inside MGM_Research.Rmd, so both are handled.
+CLEAN_SCRIPTS <- c("01_clean_AIARMS.R", "01_clean.R")
+SPAT_SCRIPTS  <- c("01b_add_spatial.R", "01b_spatial.R")
+CLEAN_CHUNK   <- "Data Cleaning"
+SPAT_CHUNK    <- "Spatial component"
+
+# Pull a named chunk out of an .Rmd as plain text.
+rmd_chunk <- function(rmd, label) {
+  x      <- readLines(rmd, warn = FALSE)
+  opens  <- grep("^```\\{r", x)
+  fences <- grep("^```\\s*$", x)
+  for (o in opens) {
+    lab <- trimws(sub("^```\\{r[ ,]*([^,}]*).*$", "\\1", x[o]))
+    if (identical(lab, label)) {
+      cl <- fences[fences > o][1]
+      if (!is.na(cl) && cl > o + 1) return(paste(x[(o + 1):(cl - 1)], collapse = "\n"))
+    }
+  }
+  NULL
+}
+
+# Find the first .Rmd in the folder that carries both chunks.
+find_pipeline_rmd <- function() {
+  for (f in list.files(".", pattern = "\\.Rmd$", ignore.case = TRUE)) {
+    if (!is.null(rmd_chunk(f, CLEAN_CHUNK)) && !is.null(rmd_chunk(f, SPAT_CHUNK)))
+      return(f)
+  }
+  NULL
+}
+
+# The cleaning scripts are run in a SEPARATE R PROCESS, which is how you would
+# run them by hand. Two reasons it has to be a subprocess rather than source():
+# 01_clean_AIARMS.R opens with rm(list = ls()), which would wipe this app's
+# objects, and 01b_add_spatial.R checks its own prerequisites with
+# vapply(need, exists, ...), which only resolves against the global environment
+# and so fails if the script is sourced into a private one.
+run_pipeline <- function() {
+  if (is.null(find_app_file(DATA_FILE)))
+    stop(DATA_FILE, " not found; the cleaning step needs it.")
+
+  # Return a runnable .R path for a step, writing the .Rmd chunk out to a
+  # temporary file when no standalone script exists.
+  resolve_step <- function(script_names, chunk_label) {
+    for (nm in script_names) {
+      f <- find_app_file(nm)
+      if (!is.null(f)) return(normalizePath(f, winslash = "/"))
+    }
+    rmd <- find_pipeline_rmd()
+    if (is.null(rmd))
+      stop("Cannot find ", paste(script_names, collapse = " or "),
+           ", and no .Rmd here contains a '", chunk_label, "' chunk.")
+    tmp <- file.path(tempdir(),
+                     paste0(gsub("[^A-Za-z0-9]+", "_", chunk_label), ".R"))
+    writeLines(rmd_chunk(rmd, chunk_label), tmp)
+    normalizePath(tmp, winslash = "/")
+  }
+
+  f1 <- resolve_step(CLEAN_SCRIPTS, CLEAN_CHUNK)
+  f2 <- resolve_step(SPAT_SCRIPTS,  SPAT_CHUNK)
+
+  rscript <- file.path(R.home("bin"),
+    if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
+  code <- sprintf('setwd("%s"); source("%s"); source("%s")',
+                  normalizePath(getwd(), winslash = "/"), f1, f2)
+  out <- suppressWarnings(
+    system2(rscript, c("-e", shQuote(code)), stdout = TRUE, stderr = TRUE))
+  st  <- attr(out, "status")
+  if (!is.null(st) && st != 0)
+    stop("the cleaning pipeline exited with status ", st, ":\n",
+         paste(utils::tail(out, 12), collapse = "\n"))
+  invisible(out)
+}
+
+# Rebuild mgm_spatial_bundle.rds. This is the same sequence as the export chunk
+# of spatial_autocorrelation_MGM.Rmd and calls the same functions out of
+# mgm_spatial_core.R, so the statistics cannot diverge from the report; only
+# the assembly is restated here so the app can stand alone.
+build_spatial_bundle <- function(obj_path, out_path,
+                                 k = 8, nsim_global = 9999, nsim_lee = 19999) {
+  A  <- readRDS(obj_path)
+  E  <- expand_registry(A)
+  xy <- mgm_coords(A)
+  cov_vars <- E$meta$var[E$meta$group != "Spatial"]
+  sp_vars  <- E$meta$var[E$meta$group == "Spatial"]
+  wcfg <- list(type = "knn", k = k, style = "W")
+
+  G <- global_table(E$X, xy, cov_vars, wcfg = wcfg, nsim = nsim_global, seed = 1)
+  G <- merge(G, E$meta[, c("var", "group", "label")], by.x = "variable", by.y = "var")
+  G <- G[order(-G$moran_I), ]
+  LM <- lee_matrix_fast(E$X, xy, cov_vars, wcfg = wcfg, nsim = nsim_lee, seed = 1)
+
+  saveRDS(list(X = E$X, meta = E$meta, coords = xy, lonlat = A$lonlat,
+               registry = A$registry, W_01b = A$W,
+               cov_vars = cov_vars, sp_vars = sp_vars,
+               global = G, lee = LM, site_group = A$site_group,
+               k = k, built = Sys.time()), out_path)
+  invisible(out_path)
+}
+
+# Number of distinct sampling months, read from the CSV header only.
+N_MONTHS <- NA_integer_
+local({
+  f <- find_app_file(DATA_FILE)
+  if (!is.null(f)) {
+    nm <- tryCatch(names(utils::read.csv(f, nrows = 1L)), error = function(e) character(0))
+    m  <- grep("^(EC|KP|ESBL)_", nm, value = TRUE)
+    if (length(m)) N_MONTHS <<- length(unique(sub("^(EC|KP|ESBL)_", "", m)))
+  }
+})
+
+BUILD_LOG <- character(0)
+if (BUILD_ON_START) {
+  # Step 1: the MGM object. Seconds.
+  if (is.null(find_app_file(MGM_OBJECT))) {
+    message("Building ", MGM_OBJECT, " ...")
+    ok <- tryCatch({ run_pipeline(); TRUE },
+                   error = function(e) { BUILD_LOG <<- c(BUILD_LOG,
+                     paste("Cleaning pipeline failed:", conditionMessage(e))); FALSE })
+    if (ok) BUILD_LOG <- c(BUILD_LOG, "Built output/AIARMS_mgm_spatial.rds from the cleaning scripts.")
+  }
+
+  # Step 2: the spatial results. About 35 seconds; only ever done once.
+  if (!is.null(find_app_file(MGM_OBJECT)) &&
+      is.null(find_app_file(SPATIAL_BUNDLE)) &&
+      !is.null(find_app_file(SPATIAL_CORE))) {
+    message("Building ", SPATIAL_BUNDLE, " (about 35 seconds, once) ...")
+    tryCatch({
+      source(find_app_file(SPATIAL_CORE), local = FALSE)
+      build_spatial_bundle(find_app_file(MGM_OBJECT), SPATIAL_BUNDLE)
+      BUILD_LOG <- c(BUILD_LOG, "Built mgm_spatial_bundle.rds from the MGM object.")
+    }, error = function(e)
+      BUILD_LOG <<- c(BUILD_LOG, paste("Bundle build failed:", conditionMessage(e))))
+  }
+  if (length(BUILD_LOG)) for (l in BUILD_LOG) message("  ", l)
+}
 
 SP_OK <- FALSE; SPB <- NULL
 local({
@@ -87,329 +233,749 @@ local({
 })
 MGM_HAS_SPATIAL <- MGM_OK && !is.null(AIARMS_OBJ$coords)
 
-# Length-safe default. An eventReactive with ignoreNULL = FALSE runs at
-# start-up, and a sidebar input on a nav_panel that has not been opened yet can
-# still be NULL or zero-length at that instant. Passing that straight into a
-# model call is what produced "Error in : : argument of length 0".
-`%|z|%` <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
+# The explorer was written against an object carrying vars / type / level /
+# labels / core_vars. Older builds of 01b do not all store every one of them,
+# so each is resolved here with a fall-back drawn from the registry, and what
+# was actually used is reported in the section's status line. Without this a
+# missing core_vars shows up only as "Select at least four variables", which
+# says nothing about the cause.
+MGM_VARS <- MGM_TYPE <- MGM_LEVEL <- MGM_LABELS <- MGM_CORE <- NULL
+MGM_NOTES <- character(0)
+if (MGM_OK) {
+  MGM_VARS   <- AIARMS_OBJ$vars   %|z|% colnames(AIARMS_OBJ$data) %|z|% MGM_REG$var
+  MGM_TYPE   <- AIARMS_OBJ$type   %|z|% MGM_REG$type
+  MGM_LEVEL  <- AIARMS_OBJ$level  %|z|% MGM_REG$level
+  MGM_LABELS <- AIARMS_OBJ$labels %|z|% MGM_REG$label %|z|% MGM_VARS
+  MGM_CORE   <- AIARMS_OBJ$core_vars
+
+  if (is.null(AIARMS_OBJ$vars))   MGM_NOTES <- c(MGM_NOTES, "vars taken from the data columns")
+  if (is.null(AIARMS_OBJ$type))   MGM_NOTES <- c(MGM_NOTES, "type taken from the registry")
+  if (is.null(AIARMS_OBJ$level))  MGM_NOTES <- c(MGM_NOTES, "level taken from the registry")
+  if (is.null(AIARMS_OBJ$labels)) MGM_NOTES <- c(MGM_NOTES, "labels taken from the registry")
+  if (is.null(MGM_CORE) || length(MGM_CORE) < 4) {
+    MGM_CORE  <- MGM_VARS
+    MGM_NOTES <- c(MGM_NOTES,
+      "no usable core_vars in the object, so \"Core set\" falls back to all variables")
+  }
+  # Any core variable not present in the data cannot be fitted; drop it rather
+  # than letting match() produce an NA index later.
+  drop_core <- setdiff(MGM_CORE, MGM_VARS)
+  if (length(drop_core)) {
+    MGM_CORE  <- intersect(MGM_CORE, MGM_VARS)
+    MGM_NOTES <- c(MGM_NOTES, paste("core variables absent from the data and dropped:",
+                                    paste(drop_core, collapse = ", ")))
+  }
+  if (length(MGM_VARS) != ncol(AIARMS_OBJ$data))
+    MGM_NOTES <- c(MGM_NOTES, sprintf(
+      "WARNING: %d variable names for %d data columns",
+      length(MGM_VARS), ncol(AIARMS_OBJ$data)))
+}
 
 # Palettes. Named apart from anything already in the app so nothing is masked.
-PAL_LISA <- c("High-High" = "#FF4D4D", "Low-Low"  = "#4CC9F0",
-              "High-Low"  = "#F4A582", "Low-High" = "#92C5DE")
-PAL_NS   <- "#6C7A93"
-PAL_DIV  <- colorRampPalette(c("#2166AC", "#92C5DE", "#F7F7F7", "#F4A582", "#B2182B"))
-PAL_MGM  <- c("Carriage" = "#B2182B", "Demographic" = "#EF8A62",
-              "Socioeconomic" = "#FDDBC7", "WASH" = "#67A9CF",
-              "Health" = "#2166AC", "Antibiotic" = "#7B3294",
-              "Food/animal" = "#5AAE61", "Spatial" = "#1B7837")
+PAL_LISA <- c("High-High" = "#FF6B6B", "Low-Low"  = "#22D3EE",
+              "High-Low"  = "#F5A77E", "Low-High" = "#8ECFDD")
+PAL_NS   <- "#5A7C89"
+PAL_DIV  <- colorRampPalette(c("#1F7A99", "#8ECFDD", "#F2F7F8", "#F5A77E", "#D6455B"))
+PAL_MGM  <- c("Carriage" = "#D6455B", "Demographic" = "#F58A5E",
+              "Socioeconomic" = "#FBD9C4", "WASH" = "#5AB8D4",
+              "Health" = "#1F7A99", "Antibiotic" = "#8E5BC4",
+              "Food/animal" = "#4FB477", "Spatial" = "#128C7E")
 
-# Base-R plots are drawn on white cards (the .mgm-card class already defined in
-# the theme), so they use the app's light-panel convention rather than fighting
-# the dark background.
-sp_theme_dark <- function() {
-  list(
-    ggplot2::theme_minimal(),
-    ggplot2::theme(
-      plot.background  = ggplot2::element_rect(fill = "#1C2541", color = NA),
-      panel.background = ggplot2::element_rect(fill = "#1C2541", color = NA),
-      text             = ggplot2::element_text(color = "#E0E6ED"),
-      axis.text        = ggplot2::element_text(color = "#E0E6ED")
-    )
-  )
-}
-
-# --- MGM & DATA PREPROCESSING HELPER FUNCTIONS ---
-clean_str <- function(x) {
-  x <- iconv(x, to = "ASCII//TRANSLIT", sub = "")
-  x <- gsub("[^A-Za-z0-9_]", "_", x)
-  x <- gsub("_+", "_", x)
-  x <- gsub("^_|_$", "", x)
-  return(x)
-}
-
-dedupe_dataframe <- function(df) {
-  colnames(df) <- make.unique(colnames(df), sep = "_")
-  return(df)
-}
-
-create_dummies_from_text <- function(df, col_name) {
-  if (is.null(col_name) || is.na(col_name) || !col_name %in% colnames(df)) {
-    return(list(df = df, items = character(0)))
-  }
-  
-  raw_vals <- as.character(df[[col_name]])
-  clean_items <- df %>%
-    mutate(cleaned = str_squish(gsub("\\s*,\\s*", ",", .data[[col_name]]))) %>%
-    filter(!cleaned %in% c("None", NA, "", "NA")) %>%
-    separate_rows(cleaned, sep = "[,/]") %>%
-    pull(cleaned) %>%
-    unique() %>%
-    sort()
-  
-  cleaned_items_named <- clean_str(clean_items)
-  cleaned_items_named <- cleaned_items_named[!is.na(cleaned_items_named) & cleaned_items_named != ""]
-  
-  for (i in seq_along(clean_items)) {
-    orig_item <- clean_items[i]
-    new_col_name <- cleaned_items_named[i]
-    if (!is.na(new_col_name) && new_col_name != "") {
-      df[[new_col_name]] <- as.numeric(str_detect(replace_na(raw_vals, ""), fixed(orig_item)))
-      df[[new_col_name]][is.na(df[[new_col_name]])] <- 0
-    }
-  }
-  df <- dedupe_dataframe(df)
-  return(list(df = df, items = unique(cleaned_items_named)))
-}
-
-make_clean_label <- function(x) {
-  lbls <- gsub("^(Sex_|Education_Level_|Income_Category_|Water_Source_|Toilet_Type_|study_code_)", "", x)
-  lbls <- gsub("Home_flush_pour_flush_toilet_to_main_sewer", "Flush Toilet (Sewer)", lbls)
-  lbls <- gsub("Home_flush_pour_flush_toilet_to_septic_tank", "Flush Toilet (Septic)", lbls)
-  lbls <- gsub("Home_Pit_latrine_with_slab_and_cover", "Pit Latrine (Slab)", lbls)
-  lbls <- gsub("Home_Pit_latrine_with_soil_wood_floor", "Pit Latrine (Open)", lbls)
-  lbls <- gsub("distance_to_nearest_clinic_km", "Clinic Distance (km)", lbls)
-  lbls <- gsub("Standing_Water", "Standing Water", lbls)
-  lbls <- gsub("_+", " ", lbls)
-  return(str_squish(lbls))
-}
+# Everything that still plots does so in base R on white .mgm-card panels, or
+# through leaflet. The ggplot / text-munging helpers that served the removed
+# Data & Cohort section have gone with it.
 
 # --- THEME STYLING ---
+# "Deep water" palette. Cool teals carry the structure, so anything warm on the
+# page is an epidemiological signal rather than decoration.
 app_theme <- bs_theme(
-  version = 5,
-  bg = "#0B132B",
-  fg = "#E0E6ED",
-  primary = "#4CC9F0",
-  secondary = "#3A506B",
-  success = "#4AD66D"
+  version   = 5,
+  bg        = "#041F29",   # abyss
+  fg        = "#DCEEF3",   # foam
+  primary   = "#22D3EE",   # bioluminescent aqua
+  secondary = "#16576B",   # shelf
+  success   = "#3DDC97",   # algal green
+  info      = "#5AB8D4",   # shallow water
+  warning   = "#FFC15E",   # caution
+  danger    = "#FF6B6B"    # contamination
 )
+
+# --- Small presentational helpers for the Methodology section ---------------
+# eqbox() frames an equation so it reads as the focal point of a passage rather
+# than a line of text among others. chip() and defrow() carry short facts and
+# definitions without turning them into paragraphs.
+eqbox <- function(label, latex, caption = NULL) {
+  div(class = "eqbox",
+      div(class = "eqlabel", label),
+      p(latex),
+      if (!is.null(caption)) div(class = "eqcap", caption))
+}
+
+chip <- function(key, value, detail = NULL, tone = NULL) {
+  div(class = paste("chip", tone),
+      div(class = "k", key),
+      div(class = "v", value),
+      if (!is.null(detail)) div(class = "d", detail))
+}
+
+chiprow <- function(...) div(class = "chiprow", ...)
+
+defrow <- function(term, desc)
+  div(class = "defrow", div(class = "term", term), div(class = "desc", desc))
+
+# Every section opens with the same banner: an eyebrow label, a heading and one
+# line saying what the section answers. Consistency here is what stops the app
+# reading as a pile of unrelated tabs.
+sec_head <- function(eyebrow, title, lede) {
+  div(class = "sec-head",
+      div(class = "eyebrow", eyebrow),
+      tags$h2(title),
+      p(class = "lede", lede))
+}
 
 # --- UI DEFINITION ---
 ui <- page_navbar(
+  id = "main_nav",                 # nav_select() targets this
   theme = app_theme,
   title = "SWAM",
   window_title = "SWAM - Spatial Wastewater & Antimicrobial Monitor",
   fillable = FALSE,
   header = tagList(
     tags$head(tags$style(HTML("
-      body, .bslib-page-navbar { background-color: #0B132B !important; color: #E0E6ED !important; }
+      body, .bslib-page-navbar { background-color: #041F29 !important; color: #DCEEF3 !important; }
       .card:not(.mgm-card), .bslib-card:not(.mgm-card), .well, .accordion-body { 
-        background-color: #1C2541 !important; color: #E0E6ED !important; border: 1px solid #3A506B !important; 
+        background-color: #0B3140 !important; color: #DCEEF3 !important; border: 1px solid #16576B !important; 
       }
-      .accordion-button { background-color: #1C2541 !important; color: #4CC9F0 !important; border-bottom: 1px solid #3A506B !important; }
-      .accordion-button:not(.collapsed) { background-color: #162447 !important; color: #4CC9F0 !important; }
-      .sidebar, .bslib-sidebar-layout > .sidebar { background-color: #162447 !important; border-right: 1px solid #3A506B !important; }
-      .nav-tabs .nav-link.active { background-color: #4CC9F0 !important; color: #0B132B !important; font-weight: bold; }
-      .nav-tabs .nav-link { color: #A0AEC0 !important; }
-      .table, .table td, .table th, .dataTables_wrapper { color: #E0E6ED !important; }
-      .form-control, .form-select { background-color: #0B132B !important; color: #E0E6ED !important; border: 1px solid #3A506B !important; }
-      .value-box { background-color: #1C2541 !important; border: 1px solid #3A506B !important; }
-      .mgm-card { background-color: #FFFFFF !important; color: #1A202C !important; border: 1px solid #CBD5E0 !important; }
+      .accordion-button { background-color: #0B3140 !important; color: #22D3EE !important; border-bottom: 1px solid #16576B !important; }
+      .accordion-button:not(.collapsed) { background-color: #072A36 !important; color: #22D3EE !important; }
+      .sidebar, .bslib-sidebar-layout > .sidebar { background-color: #072A36 !important; border-right: 1px solid #16576B !important; }
+      .nav-tabs .nav-link.active { background-color: #22D3EE !important; color: #041F29 !important; font-weight: bold; }
+      .nav-tabs .nav-link { color: #8FAFBC !important; }
+      .table, .table td, .table th, .dataTables_wrapper { color: #DCEEF3 !important; }
+      .form-control, .form-select { background-color: #041F29 !important; color: #DCEEF3 !important; border: 1px solid #16576B !important; }
+      .value-box { background-color: #0B3140 !important; border: 1px solid #16576B !important; }
+      .mgm-card { background-color: #FFFFFF !important; color: #1A202C !important; border: 1px solid #C3D9E0 !important; }
       .mgm-card p, .mgm-card h5, .mgm-card div { color: #1A202C !important; }
       .navbar-brand { font-weight: 700 !important; letter-spacing: 0.06em; }
-      .swam-subtitle { color: #A0AEC0; font-size: 0.95rem; letter-spacing: 0.02em;
+      .swam-subtitle { color: #8FAFBC; font-size: 0.95rem; letter-spacing: 0.02em;
                        padding: 4px 0 10px 4px; }
+
+      /* Landing page */
+      .hero { background: linear-gradient(135deg, #072A36 0%, #041F29 70%);
+              border: 1px solid #16576B; border-radius: 8px;
+              padding: 34px 38px; margin-bottom: 22px; }
+      .hero h1 { font-size: 2.15rem; font-weight: 700; letter-spacing: 0.02em;
+                 margin: 0 0 6px 0; color: #FFFFFF; }
+      .hero .lede { font-size: 1.05rem; color: #BBD7E0; max-width: 60em;
+                    line-height: 1.55; margin-bottom: 4px; }
+      .hero .eyebrow { text-transform: uppercase; letter-spacing: 0.18em;
+                       font-size: 0.72rem; color: #22D3EE; margin-bottom: 10px; }
+      .jump-row .btn { margin: 14px 10px 0 0; font-weight: 600; }
+      .aim { border-left: 3px solid #22D3EE; padding: 2px 0 2px 14px;
+             margin-bottom: 16px; }
+      .aim b { color: #22D3EE; }
+      .step-num { display: inline-block; width: 26px; height: 26px;
+                  border-radius: 50%; background: #22D3EE; color: #041F29;
+                  text-align: center; font-weight: 700; line-height: 26px;
+                  margin-right: 10px; }
+      .theory { line-height: 1.62; }
+      .theory .eqnote { color: #8FAFBC; font-size: 0.88rem; }
+      .MathJax, .MathJax_Display { color: #DCEEF3 !important; }
+
+      /* --- Section banners: every section opens the same way --- */
+      .sec-head { border-left: 4px solid #22D3EE; padding: 2px 0 2px 18px;
+                  margin: 4px 0 22px 0; }
+      .sec-head .eyebrow { text-transform: uppercase; letter-spacing: 0.16em;
+                           font-size: 0.68rem; color: #22D3EE; font-weight: 700;
+                           margin-bottom: 6px; }
+      .sec-head h2 { font-size: 1.55rem; font-weight: 700; color: #FFFFFF;
+                     margin: 0 0 8px 0; letter-spacing: 0.01em; }
+      .sec-head .lede { color: #9CBAC6; font-size: 0.97rem; line-height: 1.55;
+                        max-width: 62em; margin: 0; }
+
+      /* --- Headings inside cards --- */
+      .card-header { font-weight: 700 !important; letter-spacing: 0.03em;
+                     background-color: #072A36 !important;
+                     border-bottom: 1px solid #16576B !important;
+                     color: #22D3EE !important; font-size: 0.95rem; }
+      h5 { color: #22D3EE; font-weight: 700; font-size: 1.02rem;
+           letter-spacing: 0.02em; margin-top: 4px; }
+      h6 { color: #DCEEF3; font-weight: 700; font-size: 0.88rem;
+           text-transform: uppercase; letter-spacing: 0.09em; }
+      .mgm-card h5, .mgm-card h6 { color: #1A202C !important; }
+
+      /* --- Tabs: clearer active state, more breathing room --- */
+      .nav-tabs { border-bottom: 1px solid #16576B !important; }
+      .nav-tabs .nav-link { padding: 10px 18px !important; font-weight: 600;
+                            border: none !important; }
+      .nav-tabs .nav-link:hover { color: #22D3EE !important; }
+      .nav-tabs .nav-link.active { border-radius: 6px 6px 0 0 !important; }
+      .navbar .nav-link { font-weight: 600; letter-spacing: 0.02em; }
+
+      /* --- Value boxes --- */
+      .value-box .value-box-title { text-transform: uppercase;
+                                    letter-spacing: 0.11em; font-size: 0.7rem;
+                                    color: #8FAFBC !important; }
+      .value-box .value-box-value { font-weight: 700; }
+
+      /* --- Rhythm --- */
+      .card { margin-bottom: 16px; }
+      .card-body { padding: 20px 22px; }
+      .theory p { margin-bottom: 0.95rem; }
+      .accordion-button { font-weight: 600; font-size: 0.9rem; }
+      hr { border-color: #16576B !important; opacity: 1; margin: 18px 0; }
+      .sidebar h6 { margin-top: 2px; }
+
+      /* --- Themed notices, instead of Bootstrap's cream boxes --- */
+      .note-warn { color: #FFD79A !important;
+                   background: rgba(255,193,94,0.10) !important;
+                   border: 1px solid rgba(255,193,94,0.45) !important;
+                   border-left: 4px solid #FFC15E !important;
+                   padding: 12px 16px; border-radius: 4px; }
+      .note-info { color: #A9EDF7 !important;
+                   background: rgba(34,211,238,0.09) !important;
+                   border: 1px solid rgba(34,211,238,0.40) !important;
+                   border-left: 4px solid #22D3EE !important;
+                   padding: 12px 16px; border-radius: 4px; }
+      .note-warn b, .note-info b { color: inherit !important; }
+
+      /* --- Equation panels: the maths becomes the focal point --- */
+      .eqbox { background: linear-gradient(90deg, rgba(34,211,238,0.07), rgba(34,211,238,0.0));
+               border-left: 3px solid #22D3EE; border-radius: 0 6px 6px 0;
+               padding: 6px 20px 10px 20px; margin: 14px 0 20px 0; }
+      .eqbox .eqlabel { text-transform: uppercase; letter-spacing: 0.15em;
+                        font-size: 0.66rem; color: #22D3EE; font-weight: 700;
+                        margin-bottom: 2px; }
+      .eqbox .eqcap { color: #8FAFBC; font-size: 0.85rem; margin-top: 2px; }
+
+      /* --- Small fact chips used across the methodology tabs --- */
+      .chiprow { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; }
+      .chip { flex: 1 1 210px; background: #072A36; border: 1px solid #16576B;
+              border-top: 3px solid #22D3EE; border-radius: 6px;
+              padding: 12px 16px; }
+      .chip .k { text-transform: uppercase; letter-spacing: 0.12em;
+                 font-size: 0.64rem; color: #8FAFBC; font-weight: 700; }
+      .chip .v { font-size: 1.02rem; color: #DCEEF3; font-weight: 700;
+                 margin-top: 3px; }
+      .chip .d { font-size: 0.82rem; color: #8FAFBC; margin-top: 4px;
+                 line-height: 1.45; }
+      .chip.warm { border-top-color: #FF6B6B; }
+      .chip.cool { border-top-color: #1F7A99; }
+
+      /* --- Definition rows --- */
+      .defrow { display: flex; gap: 14px; padding: 9px 0;
+                border-bottom: 1px solid rgba(22,87,107,0.55); }
+      .defrow:last-child { border-bottom: none; }
+      .defrow .term { flex: 0 0 190px; color: #22D3EE; font-weight: 700;
+                      font-size: 0.9rem; }
+      .defrow .desc { flex: 1; color: #DCEEF3; font-size: 0.92rem;
+                      line-height: 1.55; }
     "))),
+    withMathJax(),                 # without this the $$...$$ render as plain text
     div(class = "swam-subtitle", "Spatial Wastewater & Antimicrobial Monitor")
   ),
   
   # SECTION 1: INTRODUCTION
   nav_panel(
     "Introduction",
-    icon = bsicons::bs_icon("book-half"),
-    layout_column_wrap(
-      width = 1,
+    icon = bsicons::bs_icon("house-door-fill"),
+
+    div(
+      class = "hero",
+      div(class = "eyebrow", "WST795 Research Report  |  University of Pretoria"),
+      h1("Spatial modelling of wastewater data in epidemiology"),
+      p(class = "lede",
+        "Antimicrobial resistance in KwaZulu-Natal, read two ways: a mixed ",
+        "graphical model for the conditional dependencies between covariates, ",
+        "and spatial autocorrelation for where those covariates cluster on the ",
+        "ground. Both run on one cleaned dataset of 162 households."),
+      div(
+        class = "jump-row",
+        actionButton("jump_method",  "Read the methodology",
+                     icon = bsicons::bs_icon("book"), class = "btn-outline-info"),
+        actionButton("jump_spatial", "Spatial autocorrelation",
+                     icon = bsicons::bs_icon("bullseye"), class = "btn-primary"),
+        actionButton("jump_mgm",     "MGM explorer",
+                     icon = bsicons::bs_icon("diagram-3-fill"), class = "btn-primary")
+      )
+    ),
+
+    layout_columns(
+      fill = FALSE,
+      value_box(title = "Households", value = textOutput("lp_kpi_hh"),
+                showcase = bsicons::bs_icon("house-fill"), theme = "primary"),
+      value_box(title = "Sampling Months", value = textOutput("lp_kpi_months"),
+                showcase = bsicons::bs_icon("calendar3"), theme = "secondary"),
+      value_box(title = "MGM Nodes", value = textOutput("lp_kpi_nodes"),
+                showcase = bsicons::bs_icon("diagram-3"), theme = "info"),
+      value_box(title = "Covariates Tested", value = textOutput("lp_kpi_cov"),
+                showcase = bsicons::bs_icon("list-ol"), theme = "success"),
+      value_box(title = "Spatially Clustered", value = textOutput("lp_kpi_sig"),
+                showcase = bsicons::bs_icon("bullseye"), theme = "danger")
+    ),
+
+    layout_columns(
+      col_widths = c(7, 5),
+
       card(
-        card_header("Background & Research Context"),
+        card_header("Why this study"),
         card_body(
-          p("Antimicrobial Resistance (AMR) represents one of the most critical global public health threats. In resource-constrained settings, pathogen transmission dynamics are mediated by clinical exposure, environmental hygiene, socio-demographic vulnerabilities, and spatial proximity to healthcare facilities."),
-          p("The AIARMS framework tracks longitudinal biological and socio-environmental indicators across KwaZulu-Natal (KZN), South Africa. This dashboard utilizes interactive spatial mapping and dynamic Mixed Graphical Models (MGMs) to disentangle direct conditional dependencies.")
+          class = "theory",
+          p("Wastewater-based epidemiology (WBE) has emerged as a powerful tool in ",
+            "public health management, particularly after the COVID-19 pandemic. ",
+            "An effective outbreak response requires fast and accurate detection, ",
+            "efficient allocation of resources, and the ability to react ",
+            "predictively rather than retrospectively. Clinical trials remain the ",
+            "standard choice, but they are expensive, time consuming, invasive, ",
+            "and require the consent of the individuals involved, which makes them ",
+            "poorly suited as a standalone method. WBE complements them: it is ",
+            "inexpensive, non-invasive, allows real-time decision making, and is ",
+            "less biased."),
+          p("Spatial statistics shifts the viewpoint from where something is to ",
+            "why it may occur there. Demographic-based mapping connects physical ",
+            "location with the characteristics of the population present, treated ",
+            "as covariates. Elevation, for instance, was found to be associated ",
+            "with the distribution of cholera during the 2008-2009 epidemic in ",
+            "Harare, Zimbabwe."),
+          p("This report focuses on antimicrobial resistance (AMR): the process of ",
+            "a micro-organism surviving despite the presence of an antibiotic. The ",
+            "global rise in AMR threatens to undo decades of progress in treating ",
+            "bacterial infectious disease, which is why it is studied here in ",
+            "place of COVID-19, and specifically how resistance can be identified ",
+            "through covariates.")
         )
       ),
-      layout_columns(
-        col_widths = c(6, 6),
-        card(
-          card_header("Core Study Objectives"),
-          card_body(
-            tags$ul(
-              tags$li(tags$b("Longitudinal Surveillance: "), "Track monthly positivity dynamics for Escherichia coli (EC), Klebsiella pneumoniae (KP), and ESBL producers across 27 distinct monthly markers."),
-              tags$li(tags$b("Spatial Mapping: "), "Map household spatial distributions against provincial ward boundaries and healthcare access points."),
-              tags$li(tags$b("Dynamic Mixed Graphical Models: "), "Estimate conditionally independent dependencies between WASH factors, symptoms, diseases, chronic conditions, site codes, and resistance profiles.")
-            )
+
+      card(
+        card_header("The four aims"),
+        card_body(
+          div(class = "aim", tags$b("1. "),
+              "Investigate the significance of demographic factors through mixed ",
+              "graphical models, then connect those factors to physical location ",
+              "and to AMR markers."),
+          div(class = "aim", tags$b("2. "),
+              "Use the MGM results to make connections between these factors, and ",
+              "focus on those showing high correlation to both location and the ",
+              "markers."),
+          div(class = "aim", tags$b("3. "),
+              "Apply spatial autocorrelation to those covariates to establish ",
+              "which are spatially significant within KwaZulu-Natal."),
+          div(class = "aim", tags$b("4. "),
+              "Draw conclusions that improve the effectiveness of public health ",
+              "intervention.")
+        )
+      )
+    ),
+
+    layout_columns(
+      col_widths = c(4, 4, 4),
+
+      card(
+        card_header("Target pathogens and markers"),
+        card_body(
+          tags$ul(
+            tags$li(tags$b("Escherichia coli (EC). "),
+                    "Indicator organism for faecal-oral environmental ",
+                    "transmission, across nine sampling months."),
+            tags$li(tags$b("Klebsiella pneumoniae (KP). "),
+                    "Opportunistic pathogen associated with plasmid-mediated ",
+                    "multi-drug resistance."),
+            tags$li(tags$b("ESBL phenotype. "),
+                    "Enzymatic resistance conferring immunity to broad-spectrum ",
+                    "beta-lactam antibiotics.")
           )
-        ),
-        card(
-          card_header("Target Pathogens & Markers"),
-          card_body(
-            tags$ul(
-              tags$li(tags$b("Escherichia coli (EC): "), "Indicator pathogen for fecal-oral environmental transmission pathways across 9 sampling months."),
-              tags$li(tags$b("Klebsiella pneumoniae (KP): "), "Opportunistic pathogen associated with plasmid-mediated multi-drug resistance acquisition."),
-              tags$li(tags$b("ESBL Phenotype: "), "Enzymatic resistance conferring immunity to broad-spectrum beta-lactam antibiotics.")
-            )
-          )
+        )
+      ),
+
+      card(
+        card_header("The data"),
+        card_body(
+          p("A household survey conducted in KwaZulu-Natal, carrying variables of ",
+            "several measurement types at once: binary resistance markers, ",
+            "categorical demographic and sanitation responses, count variables ",
+            "and continuous measurements."),
+          p("That mixture is exactly why a mixed graphical model is required ",
+            "rather than a single-type network, and why each node in this app ",
+            "carries a declared type and level."),
+          uiOutput("lp_data_status")
+        )
+      ),
+
+      card(
+        card_header("How to use this app"),
+        card_body(
+          p(span(class = "step-num", "1"),
+            "Read the ", tags$b("Methodology"), " for the definitions and ",
+            "equations every result below is computed from."),
+          p(span(class = "step-num", "2"),
+            tags$b("Spatial Autocorrelation"), " answers aim 3 -- Moran's I, ",
+            "Geary's C and the LISA, under a weights matrix you choose."),
+          p(span(class = "step-num", "3"),
+            tags$b("MGM Explorer"), " answers aims 1 and 2 -- the conditional ",
+            "dependency network, refitted live as you change its settings."),
+          p(span(class = "step-num", "4"),
+            tags$b("Conclusion"), " draws the two together.")
         )
       )
     )
   ),
-  
+
   # SECTION 2: METHODOLOGY
   nav_panel(
     "Methodology",
     icon = bsicons::bs_icon("gear-wide-connected"),
+    sec_head("Section 2  |  Background theory",
+             "Methodology",
+             paste("The definitions, equations and estimation procedure behind",
+                   "every number this app reports. Each tab corresponds to a",
+                   "subsection of the written report.")),
     navset_card_tab(
-      nav_panel(
-        "Study Design & Filtering Framework",
-        card_body(
-          h5("Cohort Structure & Marker / Area / Covariate Stratification"),
-          p("The analytical pipeline integrates demographic, clinical, WASH, and biological indicators across KZN household cohorts. Stratification allows focused filtering based on longitudinal target markers, area study codes, and specific environmental covariates extracted via temp_final.")
-        )
-      ),
-      nav_panel(
-        "Spatial Epidemiology",
-        card_body(
-          h5("Spatial Distance Calculations"),
-          p("Household GPS coordinates (WGS 84 / EPSG:4326) are projected to evaluate Euclidean proximity to healthcare services:"),
-          p("$$d(h, C) = \\min_{c \\in C} \\sqrt{(x_h - x_c)^2 + (y_h - y_c)^2}$$")
-        )
-      ),
-      nav_panel(
-        "Mixed Graphical Models (MGM)",
-        card_body(
-          h5("Regularized Network Estimation"),
-          p("Mixed Graphical Models capture direct conditional dependencies between continuous variables (e.g., age, spatial clinic distance) and discrete binary variables (e.g., WASH indicators, 27 longitudinal markers, infections, site codes, and symptoms)."),
-          p("Edge selection is penalized using EBIC-LASSO tuning parameter optimization:"),
-          p("$$\\text{EBIC}_{\\gamma} = -2 \\ln L + k \\ln n + 2 \\gamma k \\ln p$$")
-        )
-      )
-    )
-  ),
-  
-  # SECTION 3: APPLICATION & DASHBOARD
-  nav_panel(
-    "Application & Dashboard",
-    icon = bsicons::bs_icon("speedometer2"),
-    layout_sidebar(
-      sidebar = sidebar(
-        width = 340,
-        accordion(
-          open = c("Dataset & Status", "Surveillance & Spatial Filters"),
-          accordion_panel(
-            "Dataset & Status",
-            icon = bsicons::bs_icon("folder-check"),
-            verbatimTextOutput("file_status_diag"),
-            fileInput("file1", "Manual CSV Upload", accept = c(".csv"))
-          ),
-          accordion_panel(
-            "Surveillance & Spatial Filters",
-            icon = bsicons::bs_icon("sliders"),
-            selectInput(
-              "pathogen", "Primary Target Marker Family:",
-              choices = c("E. coli (EC)" = "EC", "K. pneumoniae (KP)" = "KP", "ESBL" = "ESBL"),
-              selected = "EC"
-            ),
-            selectInput(
-              "region_filter", "Area / Subsection Filter:",
-              choices = c(
-                "All Areas / KZN Cohort" = "ALL", "Subsection ARUE" = "ARUE",
-                "Subsection ARUO" = "ARUO", "Subsection ARUL" = "ARUL",
-                "Subsection ARUT" = "ARUT", "Subsection ARUS" = "ARUS",
-                "Subsection ARUU" = "ARUU", "Subsection ARUF" = "ARUF"
-              ),
-              selected = "ALL"
-            ),
-            checkboxGroupInput(
-              "gender_filter", "Filter Sex / Gender:",
-              choices = c("Female" = "F", "Male" = "M"),
-              selected = c("F", "M"), inline = TRUE
-            ),
-            sliderInput("age_range", "Filter Age Range:", min = 18, max = 90, value = c(18, 90)),
-            hr(),
-            h6("Covariate & Infrastructure Filters"),
-            uiOutput("dynamic_covariate_filters")
-          )
-        )
-      ),
-      
-      layout_columns(
-        fill = FALSE,
-        value_box(
-          title = "Filtered Cohort Size",
-          value = textOutput("kpi_total_pts"),
-          showcase = bsicons::bs_icon("people-fill"),
-          theme = "primary"
-        ),
-        value_box(
-          title = "Pathogen Positivity",
-          value = textOutput("kpi_pos_rate"),
-          showcase = bsicons::bs_icon("activity"),
-          theme = "danger"
-        ),
-        value_box(
-          title = "Active Subsections",
-          value = textOutput("kpi_active_subsections"),
-          showcase = bsicons::bs_icon("geo-alt-fill"),
-          theme = "info"
-        )
-      ),
-      
-      navset_card_tab(
-        nav_panel(
-          "Interactive Spatial Map",
-          icon = bsicons::bs_icon("map"),
-          leafletOutput("kzn_map_plot", height = "600px")
-        ),
-        nav_panel(
-          "Pathogen Surveillance",
-          icon = bsicons::bs_icon("graph-up-arrow"),
-          layout_columns(
-            col_widths = c(8, 4),
-            plotlyOutput("prevalence_plot", height = "420px"),
-            DTOutput("prevalence_table")
-          )
-        ),
-        nav_panel(
-          "Subsection Comparison",
-          icon = bsicons::bs_icon("bar-chart-steps"),
-          plotlyOutput("subsection_plot", height = "450px")
-        ),
-        nav_panel(
-          "Demographic Analysis",
-          icon = bsicons::bs_icon("person-bounding-box"),
-          layout_columns(
-            col_widths = c(4, 8),
-            verbatimTextOutput("demo_summary"),
-            plotlyOutput("age_dist_plot", height = "420px")
-          )
-        ),
-        nav_panel(
-          "MGM Network Analysis",
-          icon = bsicons::bs_icon("diagram-3"),
-          card(
-            class = "mgm-card",
-            card_body(
-              div(
-                style = "margin-bottom: 10px;",
-                h5("Interactive Mixed Graphical Model", style = "margin-bottom: 2px; font-weight: bold;"),
-                p("Direct conditional dependency network calculated across all covariates and 27 longitudinal markers.")
-              ),
-              uiOutput("mgm_status_msg"),
-              visNetworkOutput("mgm_network_plot", height = "680px")
-            )
-          )
-        ),
-        nav_panel(
-          "Data Explorer",
-          icon = bsicons::bs_icon("table"),
-          DTOutput("raw_data_table")
-        )
-      )
-    )
-  ),
-  
 
-  # SECTION 4: SPATIAL AUTOCORRELATION
+      nav_panel(
+        "Spatial Data & Dependence",
+        icon = bsicons::bs_icon("globe-americas"),
+        card_body(
+          class = "theory",
+          h5("Types of spatial data"),
+          p("Spatial data are classified by how the locations, and the values at ",
+            "those locations, are treated. Two types matter here."),
+          layout_columns(
+            col_widths = c(6, 6),
+            div(
+              eqbox("Geostatistical",
+                    "$$\\{Z(s) : s \\in D\\}$$",
+                    "Locations are fixed, values are modelled randomly."),
+              p("The locations \\(s \\in D\\) are fixed and the values \\(Z\\) ",
+                "are modelled randomly.")
+            ),
+            div(
+              eqbox("Lattice",
+                    "$$\\{Z(A_i) : A_i \\subset D\\}, \\quad \\bigcup_{i=1}^{m} A_i = D$$",
+                    "Areas are fixed, values are modelled randomly."),
+              p("The areas \\(A_i \\subset D\\) are fixed and the values ",
+                "\\(Z\\) are modelled randomly.")
+            )
+          ),
+          hr(),
+          h5("Tobler's first law of geography"),
+          div(style = paste("border-left:3px solid #22D3EE; padding:10px 0 10px 20px;",
+                            "margin:6px 0 14px 0; font-size:1.06rem;",
+                            "color:#BBD7E0; font-style:italic;"),
+              "\"Everything is related to everything else, but near things are ",
+              "more related than distant things.\""),
+          hr(),
+          h5("Spatial dependence and spatial autocorrelation"),
+          div(
+            defrow("Spatial dependence",
+                   "Observations that are close to each other are more similar than observations far apart."),
+            defrow("Spatial autocorrelation",
+                   HTML(paste0("The extent to which a variable is correlated with itself through space. ",
+                               "It looks at the same attribute in different locations, seen through ",
+                               "\\(Z(s_i)\\) and \\(Z(s_j)\\): the \\(s\\) indicates the same ",
+                               "attribute being observed, while \\(i\\) and \\(j\\) indicate ",
+                               "different locations.")))
+          ),
+          chiprow(
+            chip("Positive autocorrelation", "Clusters",
+                 paste("Locations with similar values lie close together, so the",
+                       "map shows clusters."), tone = "warm"),
+            chip("Negative autocorrelation", "Checkerboard",
+                 paste("Neighbouring locations tend to hold dissimilar values, so",
+                       "the map shows a checkerboard-like alternation."), tone = "cool")
+          ),
+          div(
+            class = "alert note-info",
+            tags$b("Applied here. "),
+            "The 162 households are point-referenced, so by the classification ",
+            "above the data are geostatistical. Moran's I, Geary's C and the LISA ",
+            "are lattice methods, so a neighbourhood must be imposed on the points ",
+            "before they can be applied. That construction is the subject of the ",
+            "Spatial Weights tab of the Spatial Autocorrelation section."
+          )
+        )
+      ),
+
+      nav_panel(
+        "Moran's I & Geary's C",
+        icon = bsicons::bs_icon("rulers"),
+        card_body(
+          class = "theory",
+          h5("Notation"),
+          p("Let \\(Z\\) be a continuous attribute with \\(E[Z(\\mathbf{s})] = \\mu\\) ",
+            "and constant variance, let \\(w_{ij}\\) denote the spatial weight ",
+            "linking areas \\(i\\) and \\(j\\), let ",
+            "\\(w_{\\cdot\\cdot} = \\sum_i \\sum_j w_{ij}\\), and let"),
+          eqbox("Sample variance",
+                "$$S^2 = \\tfrac{1}{n-1}\\sum_{i=1}^{n}\\bigl(Z(\\mathbf{s}_i) - \\bar{Z}\\bigr)^2$$"),
+          hr(),
+          h5("Moran's I"),
+          eqbox("Equation (1)  |  Moran's I",
+                "$$I = \\frac{n}{(n-1)\\,S^2\\,w_{\\cdot\\cdot}} \\sum_{i=1}^{n} \\sum_{j=1}^{n} w_{ij} \\bigl(Z(\\mathbf{s}_i) - \\bar{Z}\\bigr)\\bigl(Z(\\mathbf{s}_j) - \\bar{Z}\\bigr)$$",
+                "Cross-products about the mean, weighted by proximity."),
+          chiprow(
+            chip("Null value", "\\(E[I] = -\\tfrac{1}{n-1}\\)",
+                 "The reference is this value, not zero."),
+            chip("Above the null", "Similar neighbours",
+                 "A location tends to be connected to locations with similar attribute values.",
+                 tone = "warm"),
+            chip("Below the null", "Dissimilar neighbours",
+                 "Connected locations tend to hold dissimilar values.", tone = "cool")
+          ),
+          hr(),
+          h5("Geary's C"),
+          p("Geary's \\(C\\) measures the same phenomenon through squared ",
+            "differences between neighbouring values rather than through ",
+            "cross-products about the mean:"),
+          eqbox("Equation (2)  |  Geary's C",
+                "$$C = \\frac{1}{2\\,S^2\\,w_{\\cdot\\cdot}} \\sum_{i=1}^{n} \\sum_{j=1}^{n} w_{ij} \\bigl(Z(\\mathbf{s}_i) - Z(\\mathbf{s}_j)\\bigr)^2$$",
+                "Squared differences between neighbouring values."),
+          chiprow(
+            chip("C < 1", "Similar neighbours",
+                 "Locations are connected to locations with similar values.", tone = "warm"),
+            chip("C > 1", "Dissimilar neighbours",
+                 "Locations are connected to locations with dissimilar values.", tone = "cool")
+          ),
+          hr(),
+          h5("Why both are reported"),
+          p("The two measures are reported together because Geary's \\(C\\) is the ",
+            "more sensitive of the two to differences between immediate ",
+            "neighbours, whereas Moran's \\(I\\) responds more to the broader ",
+            "pattern; agreement between them is therefore stronger evidence than ",
+            "either alone."),
+          div(
+            defrow("Moran's I", "Responds more to the broader pattern across the study region."),
+            defrow("Geary's C", "More sensitive to differences between immediate neighbours."),
+            defrow("Direction", "C moves opposite to I: positive autocorrelation is a high I and a low C.")
+          ),
+          div(
+            class = "alert note-warn",
+            tags$b("Assumption. "),
+            "Both assume a constant mean and variance. If the mean is not ",
+            "constant, apparent clustering may reflect nothing more than a trend ",
+            "in the mean."
+          )
+        )
+      ),
+
+      nav_panel(
+        "Local Indicators (LISA)",
+        icon = bsicons::bs_icon("geo-fill"),
+        card_body(
+          class = "theory",
+          p("Global measures summarise the entire study region in a single number ",
+            "and so cannot indicate ", tags$em("where"), " clustering occurs, ",
+            "which is precisely what is needed if resources are to be directed at ",
+            "particular catchments. This is the role of a local indicator of ",
+            "spatial association (LISA)."),
+          p("A LISA is any statistic that indicates the extent of spatial ",
+            "clustering of similar values around a given observation, and whose ",
+            "sum over all observations is proportional to a global measure of ",
+            "spatial association such as Moran's \\(I\\). In general a LISA for a ",
+            "variable \\(y_i\\) observed at location \\(i\\) may be written"),
+          eqbox("General form of a LISA",
+                "$$L_i = f\\bigl(y_i,\\, y_{J_i}\\bigr)$$"),
+          p("where \\(f\\) is a function, \\(y_i\\) is the observed value at ",
+            "\\(i\\), and \\(y_{J_i}\\) are the values observed in the ",
+            "neighbourhood \\(J_i\\) of \\(i\\). The local Moran statistic is"),
+          eqbox("Equation (3)  |  Local Moran",
+                "$$I_i = \\frac{n\\,(Z_i - \\bar{Z}) \\sum_{j} w_{ij} (Z_j - \\bar{Z})}{\\sum_{i} (Z_i - \\bar{Z})^2}$$",
+                "Sums over all observations in proportion to the global I."),
+          chiprow(
+            chip("High-High", "Cluster of high values",
+                 "A high value surrounded by high values.", tone = "warm"),
+            chip("Low-Low", "Cluster of low values",
+                 "A low value surrounded by low values.", tone = "cool"),
+            chip("High-Low / Low-High", "Spatial outlier",
+                 "A value unlike its neighbours: negative local association.")
+          ),
+          hr(),
+          h5("Interpreting local results"),
+          p("A significant positive local statistic indicates only that similar ",
+            "values are grouped together; it does not identify a covariate as the ",
+            "cause of that grouping, so local clustering must not be read as ",
+            "evidence of causation."),
+          p("Results are also sensitive to the choice of neighbourhood structure ",
+            "and spatial weight matrix, and to boundary effects at the edge of the ",
+            "study region, where areas have fewer neighbours than those in the ",
+            "interior.")
+        )
+      ),
+
+      nav_panel(
+        "Mixed Graphical Models",
+        icon = bsicons::bs_icon("diagram-3"),
+        card_body(
+          class = "theory",
+          h5("Why a mixed model is needed"),
+          p("The survey data include combined binary resistance markers, ",
+            "multi-categorical questionnaire responses and continuous ",
+            "measurements. A framework is therefore required that models all ",
+            "covariates simultaneously while illustrating the relationships ",
+            "between them, which is what a mixed graphical model provides."),
+          hr(),
+          h5("Graphical models and the meaning of an edge"),
+          p("A mixed graphical model is a family of probability distributions ",
+            "whose conditional independence structure is represented by a graph. ",
+            "Let \\(G = (V,E)\\) be an undirected graph with nodes ",
+            "\\(V = \\{1,\\dots,p\\}\\), one per measurement variable, and edges ",
+            "\\(E \\subseteq V \\times V\\). Each node \\(v\\) carries a random ",
+            "variable \\(X_v\\), collected in \\(X = (X_1,\\dots,X_p)\\)."),
+          p("The graph states conditional independence rather than mere ",
+            "association."),
+          chiprow(
+            chip("An edge means", "Direct dependence",
+                 paste("Two variables remain dependent after conditioning on",
+                       "every other variable in the model."), tone = "warm"),
+            chip("No edge means", "Explained away",
+                 paste("Any marginal association between them is explained away",
+                       "by the remaining covariates."), tone = "cool")
+          ),
+          hr(),
+          h5("Factorisation"),
+          p("The joint distribution factorises over the cliques of \\(G\\), where a ",
+            "clique \\(C \\subseteq V\\) is a subset of nodes in which every pair ",
+            "is connected:"),
+          eqbox("Equation (4)  |  Clique factorisation",
+                "$$P(X) = \\exp\\left( \\sum_{C \\in \\mathcal{C}} \\theta_C \\phi_C(X_C) - \\Phi(\\theta) \\right)$$",
+                "All structural information sits in the zero pattern of theta."),
+          p("where \\(\\mathcal{C}\\) is the set of all cliques, \\(\\phi_C\\) is ",
+            "the sufficient statistic of clique \\(C\\), and \\(\\Phi(\\theta)\\) ",
+            "is a log-normalising constant whose purpose is to make the density ",
+            "integrate to one. Since \\(\\Phi(\\theta)\\) carries no structural ",
+            "information, the conditional dependence lies entirely in the pattern ",
+            "of zero and non-zero entries in \\(\\theta\\)."),
+          hr(),
+          h5("The mixed model"),
+          p("A mixed graphical model allows the node-conditional distribution of ",
+            "each variable to be a different member of the exponential family, ",
+            "assigned on the basis of its measurement scale, so the sufficient ",
+            "statistic function \\(\\phi\\) differs between variables."),
+          p("These \\(p\\) node-conditional distributions are consistent with a ",
+            "single joint distribution that is Markov with respect to \\(G\\) ",
+            "provided each canonical parameter is a linear combination of products ",
+            "of its neighbours' sufficient statistics up to order \\(k\\), the ",
+            "maximum clique size. Here \\(p\\) is the number of nodes, \\(n\\) the ",
+            "number of observations, and \\(k\\) the order of the model.")
+        )
+      ),
+
+      nav_panel(
+        "MGM Estimation",
+        icon = bsicons::bs_icon("sliders2"),
+        card_body(
+          class = "theory",
+          h5("Neighbourhood selection"),
+          p("Because the joint distribution factorises into univariate ",
+            "conditionals from the exponential family, it can be estimated as a ",
+            "series of \\(p\\) generalised linear model regressions: the ",
+            "neighbourhood \\(N(v)\\) of each node is estimated separately and the ",
+            "results combined into the full graph."),
+          p("To obtain estimates that are exactly zero, and hence a sparse and ",
+            "interpretable graph, each regression carries an \\(\\ell_1\\) penalty, ",
+            "giving the LASSO:"),
+          eqbox("Equation (5)  |  LASSO",
+                "$$\\hat{\\theta} = \\arg\\min_{\\theta} \\left\\{ -\\mathcal{L}(\\theta, X) + \\lambda \\|\\theta\\|_1 \\right\\}$$",
+                "The L1 penalty is what makes estimates exactly zero."),
+          p("Larger values of \\(\\lambda\\) shrink more parameters to zero, ",
+            "yielding a sparser graph; the penalty also ensures identification when ",
+            "\\(p > n\\)."),
+          hr(),
+          h5("Algorithm 1  |  Estimating mixed graphical models via neighbourhood regression"),
+          tags$ol(
+            tags$li("For each \\(v \\in V\\):",
+              tags$ol(type = "a",
+                tags$li("Construct the design matrix defined by \\(k\\), the order of the MGM."),
+                tags$li("Solve the LASSO problem with regularisation parameter \\(\\lambda\\)."),
+                tags$li("Threshold the estimates at \\(\\tau\\)."),
+                tags$li("Aggregate interactions with several parameters into a single edge-weight.")
+              )),
+            tags$li("Combine the edge-weights with the AND- or OR-rule."),
+            tags$li("Define \\(G\\) based on the zero / non-zero pattern in the combined parameter vector.")
+          ),
+          hr(),
+          h5("Reconciling the two regressions"),
+          p("Since each node is regressed separately, node \\(v\\) may select node ",
+            "\\(r\\) as a neighbour while \\(r\\) does not select \\(v\\)."),
+          chiprow(
+            chip("OR-rule", "Sensitive",
+                 "Retains an edge if either regression selects it."),
+            chip("AND-rule", "Conservative  |  adopted here",
+                 "Retains an edge only if both regressions select it.", tone = "warm")
+          ),
+          hr(),
+          h5("Selecting the regularisation parameter"),
+          p("This study uses the extended Bayesian information criterion:"),
+          eqbox("Equation (6)  |  Extended BIC",
+                "$$\\mathrm{EBIC}_{\\gamma}(\\hat{\\theta}) = -2L(\\hat{\\theta}) + \\hat{s}_0 \\log n + 2\\gamma\\, \\hat{s}_0 \\log p$$",
+                "The lambda minimising this is retained."),
+          p("The value of \\(\\lambda\\) minimising this is retained. The ",
+            "hyper-parameter \\(\\gamma\\) trades sensitivity against precision: ",
+            "larger values penalise dense graphs more heavily and return fewer ",
+            "edges, while \\(\\gamma = 0\\) recovers the ordinary BIC."),
+          div(
+            class = "alert note-info",
+            tags$b("In the app. "),
+            "Every one of these choices -- \\(k\\), \\(\\lambda\\) selection, ",
+            "\\(\\gamma\\), the AND/OR rule and the \\(\\tau\\) threshold -- is a ",
+            "control in the MGM Explorer sidebar, and changing any of them refits ",
+            "the model rather than redrawing a cached one."
+          )
+        )
+      ),
+
+      nav_panel(
+        "Data Preparation",
+        icon = bsicons::bs_icon("funnel"),
+        card_body(
+          class = "theory",
+          h5("As stated in the report"),
+          p("Any duplicate in the dataset must be removed, as mixed graphical ",
+            "models assume independent observations. Unmatched entries were ",
+            "treated as missing. Covariate headings were standardised so the ",
+            "information is easier to work with."),
+          hr(),
+          h5("What the pipeline actually does"),
+          p(class = "eqnote",
+            "The cleaning scripts carry out several further steps that affect the ",
+            "results and belong in the written methods:"),
+          tags$ul(
+            tags$li("171 raw rows reduced to 164 households: seven duplicate ",
+                    "Study_codes collapsed to their most complete record."),
+            tags$li("Two households roughly 62 km from the rest of the sample were ",
+                    "excluded, leaving ", tags$b("162"), " for analysis."),
+            tags$li("Missing cells filled by median (numeric) or mode ",
+                    "(categorical), because mgm() cannot accept NA at all."),
+            tags$li("Free-text laboratory results normalised; an ESBL entry naming ",
+                    "no organism is treated as missing rather than guessed."),
+            tags$li("Two survey versions for water supply and meat consumption ",
+                    "coalesced into single variables."),
+            tags$li("Education, work status and income collapsed to ordered or ",
+                    "nominal categories with the level counts shown in the ",
+                    "Variable Dictionary.")
+          ),
+          div(
+            class = "alert note-warn",
+            tags$b("Worth reporting. "),
+            "Imputation is required by mgm() but is not neutral for a spatial ",
+            "statistic. Listwise deletion instead costs 22 households and rebuilds ",
+            "the neighbour graph for every variable, which weakens three of the ",
+            "six significant covariates. The robust results are refuse collection ",
+            "and formal dwelling."
+          )
+        )
+      )
+    )
+  ),
+
+  # SECTION 3: SPATIAL AUTOCORRELATION
   nav_panel(
     "Spatial Autocorrelation",
     icon = bsicons::bs_icon("bullseye"),
+    sec_head("Section 3  |  Research aim 3",
+             "Spatial Autocorrelation",
+             paste("Which covariates cluster in space, and where. Moran's I and",
+                   "Geary's C globally, local indicators site by site, and the",
+                   "weights matrix all of it is conditional on.")),
     layout_sidebar(
       sidebar = sidebar(
         width = 340,
@@ -492,7 +1058,14 @@ ui <- page_navbar(
           "Global I and C",
           icon = bsicons::bs_icon("table"),
           card_body(
-            p("Moran's I and Geary's C, equations (1) and (2). I > -1/(n-1) means a location tends to be connected to locations with similar values; I < -1/(n-1) means connected locations hold dissimilar values. C < 1 is positive autocorrelation and C > 1 negative, so C moves opposite to I. Both are reported because C is the more sensitive of the two to differences between immediate neighbours while I responds to the broader pattern, so agreement between them is stronger evidence than either alone."),
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "How to read this table",
+                icon = bsicons::bs_icon("info-circle"),
+                p("Moran's I and Geary's C, equations (1) and (2). I > -1/(n-1) means a location tends to be connected to locations with similar values; I < -1/(n-1) means connected locations hold dissimilar values. C < 1 is positive autocorrelation and C > 1 negative, so C moves opposite to I. Both are reported because C is the more sensitive of the two to differences between immediate neighbours while I responds to the broader pattern, so agreement between them is stronger evidence than either alone.")
+              )
+            ),
             layout_columns(
               col_widths = c(5, 7),
               DTOutput("sp_gtab"),
@@ -530,9 +1103,24 @@ ui <- page_navbar(
               card_body(
                 h6("Quadrant counts"),
                 tableOutput("sp_ltab"),
-                p(tags$b("Interpretation. "), "A significant local statistic indicates only that similar values are grouped together. It does not identify a covariate as the cause of that grouping, so local clustering must not be read as evidence of causation."),
-                p(tags$b("Multiple comparisons. "), "No site survives Benjamini-Hochberg across the local tests at any replicate count. That is the ordinary situation for a LISA, so this map is exploratory: it identifies candidate neighbourhoods, it does not confirm them. The global table carries the confirmatory weight."),
-                p(tags$b("Binary covariates. "), "At prevalence p, a High-High site contributes (1-p)^2 to I_i and a Low-Low site p^2, so High-High reaches significance more readily. That is a property of the statistic, not a finding.")
+                accordion(
+                  open = FALSE,
+                  accordion_panel(
+                    "Interpretation",
+                    icon = bsicons::bs_icon("info-circle"),
+                    p("A significant local statistic indicates only that similar values are grouped together. It does not identify a covariate as the cause of that grouping, so local clustering must not be read as evidence of causation.")
+                  ),
+                  accordion_panel(
+                    "Multiple comparisons",
+                    icon = bsicons::bs_icon("exclamation-triangle"),
+                    p("No site survives Benjamini-Hochberg across the local tests at any replicate count. That is the ordinary situation for a LISA, so this map is exploratory: it identifies candidate neighbourhoods, it does not confirm them. The global table carries the confirmatory weight.")
+                  ),
+                  accordion_panel(
+                    "Binary covariates",
+                    icon = bsicons::bs_icon("toggles"),
+                    p("At prevalence p, a High-High site contributes (1-p)^2 to I_i and a Low-Low site p^2, so High-High reaches significance more readily. That is a property of the statistic, not a finding.")
+                  )
+                )
               )
             )
           )
@@ -541,7 +1129,10 @@ ui <- page_navbar(
           "Between Covariates",
           icon = bsicons::bs_icon("grid-3x3"),
           card_body(
-            p(tags$b("Supplementary. "), "Moran's I, Geary's C and the LISA are all univariate: each asks whether one covariate clusters. Lee's L is the bivariate extension, asking whether two covariates cluster in the same places. It is not one of equations (1) to (3), so nothing here should be reported unless a corresponding subsection is added to the methodology first."),
+            div(class = "alert note-warn", style = "font-size:0.86rem; margin-bottom:14px;",
+                bsicons::bs_icon("exclamation-triangle-fill"), " ",
+                tags$b("Supplementary. "),
+                "Moran's I, Geary's C and the LISA are all univariate: each asks whether one covariate clusters. Lee's L is the bivariate extension, asking whether two covariates cluster in the same places. It is not one of equations (1) to (3), so nothing here should be reported unless a corresponding subsection is added to the methodology first."),
             layout_columns(
               col_widths = c(4, 4, 4),
               radioButtons("sp_lsrc", "Matrix shown:",
@@ -573,7 +1164,14 @@ ui <- page_navbar(
           "Spatial Weights",
           icon = bsicons::bs_icon("share-fill"),
           card_body(
-            p("Every I and C above is conditional on W. This tab is where that dependence is shown rather than assumed. The connectivity graph draws one line per non-zero weight, so it is a picture of the neighbourhood structure the statistics are computed over."),
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "Why this tab exists",
+                icon = bsicons::bs_icon("info-circle"),
+                p("Every I and C above is conditional on W. This tab is where that dependence is shown rather than assumed. The connectivity graph draws one line per non-zero weight, so it is a picture of the neighbourhood structure the statistics are computed over.")
+              )
+            ),
             layout_columns(
               col_widths = c(6, 6),
               card(
@@ -602,10 +1200,15 @@ ui <- page_navbar(
     )
   ),
 
-  # SECTION 5: MGM EXPLORER
+  # SECTION 4: MGM EXPLORER
   nav_panel(
     "MGM Explorer",
     icon = bsicons::bs_icon("diagram-3-fill"),
+    sec_head("Section 4  |  Research aims 1 and 2",
+             "Mixed Graphical Model Explorer",
+             paste("Conditional dependencies between covariates of different",
+                   "measurement types. Every control in the sidebar refits the",
+                   "model rather than redrawing a cached one.")),
     layout_sidebar(
       sidebar = sidebar(
         width = 340,
@@ -688,6 +1291,20 @@ ui <- page_navbar(
         nav_panel(
           "Network",
           icon = bsicons::bs_icon("bezier2"),
+          card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("The estimated graph. Every node is one variable; every line is an edge that survived the LASSO penalty and the AND-rule, meaning the two variables stay dependent after conditioning on all the others. Absence of a line is a claim, not a gap in the data."),
+                p("Line thickness is the edge weight. Colour is the sign where one is definable: green for positive, red for negative. For an edge involving a variable with more than two categories no sign exists, so it is drawn grey."),
+                p("The rings around each node are its predictability, drawn only if that box is ticked in the sidebar: how much of that variable its neighbours account for."),
+                p("Node colour is the domain the variable belongs to. Use the sidebar to hide weak edges or to highlight the neighbourhood of one node; neither refits the model.")
+              )
+            ),
+            
+          ),
           card(
             class = "mgm-card",
             card_body(
@@ -699,34 +1316,81 @@ ui <- page_navbar(
         nav_panel(
           "Edges",
           icon = bsicons::bs_icon("list-ul"),
-          DTOutput("mgm_edgetab")
+          card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("The same graph as a sortable list, strongest edge first. This is the tab to read numbers off, since a network drawing is good for seeing structure and poor for comparing two similar weights."),
+                p("Weight is the aggregated parameter for that pair after thresholding. Sign is positive, negative, or undefined. Undefined is not missing: it means the pair involves a variable with more than two categories, for which no single direction exists."),
+                p("The list respects the edge cut-off slider, so it always matches what the network is showing.")
+              )
+            ),
+            
+            DTOutput("mgm_edgetab")
+          )
         ),
         nav_panel(
           "Predictability",
           icon = bsicons::bs_icon("bar-chart-fill"),
-          card(
-            class = "mgm-card",
-            card_body(plotOutput("mgm_predplot", height = "520px"))
-          ),
-          DTOutput("mgm_errtab")
+          card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("How much of each variable its neighbours in the network account for. An edge says two variables are connected; predictability says whether those connections amount to anything."),
+                p("For continuous and count nodes the measure is R-squared. For categorical nodes it is normalised accuracy: the proportion correctly classified above what guessing the most common category would already achieve, so 0 means the neighbours add nothing."),
+                p("A node with many edges but low predictability is weakly determined by the rest of the network. A node with high predictability is one the other covariates genuinely explain, and is the kind worth acting on.")
+              )
+            ),
+            
+            card(
+              class = "mgm-card",
+              card_body(plotOutput("mgm_predplot", height = "520px"))
+            ),
+            DTOutput("mgm_errtab")
+          )
         ),
         nav_panel(
           "Interaction Detail",
           icon = bsicons::bs_icon("zoom-in"),
           card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("The parameters behind a single edge. The network draws one line per pair, but a pair involving a categorical variable with m categories is estimated with several parameters, and the line only shows their aggregate."),
+                p("Pick any two nodes and this prints every parameter for that interaction, which is where to look when an edge is surprising and you want to know which category is driving it."),
+                p("For an edge involving a variable with more than two categories, the weight shown in the network is the mean absolute value of several parameters. This tab prints them all.")
+              )
+            ),
+            
             layout_columns(
               col_widths = c(6, 6),
               selectInput("mgm_i1", "Node A", choices = NULL),
               selectInput("mgm_i2", "Node B", choices = NULL)
             ),
-            verbatimTextOutput("mgm_intdetail"),
-            helpText("For an edge involving a variable with more than two categories, the weight shown in the network is the mean absolute value of several parameters. This tab prints them all.")
+            verbatimTextOutput("mgm_intdetail")
           )
         ),
         nav_panel(
           "Map",
           icon = bsicons::bs_icon("pin-map"),
           card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("Where each variable in the fitted model actually sits on the ground. The MGM itself has no notion of location, so this is the bridge between the network and the Spatial Autocorrelation section."),
+                p("The neighbour-average toggle replaces each household by the mean of its neighbours. Smoothing that way makes clustering visible that individual points can hide."),
+                p("Two Moran statistics are printed. The raw one asks whether the variable clusters at all. The residual one asks whether it still clusters after the network has explained what it can: if the raw value is high and the residual is near zero, the covariates in the model already account for the spatial pattern.")
+              )
+            ),
+            
             layout_columns(
               col_widths = c(5, 4, 3),
               selectInput("mgm_mapvar", "Colour households by:", choices = NULL),
@@ -744,16 +1408,33 @@ ui <- page_navbar(
         nav_panel(
           "Variable Dictionary",
           icon = bsicons::bs_icon("journal-text"),
-          DTOutput("mgm_dict")
+          card_body(
+            accordion(
+              open = FALSE,
+              accordion_panel(
+                "What this tab shows",
+                icon = bsicons::bs_icon("info-circle"),
+                p("The registry: every variable available to the model, with the measurement type and number of levels declared for it during cleaning."),
+                p("The type column drives everything else. Type g is conditional Gaussian, p is conditional Poisson for non-negative counts, and c is conditional categorical. That declaration decides which exponential-family member each node-conditional regression uses."),
+                p("It also decides which spatial statistic a variable is eligible for. A c node with more than two levels has no meaningful numeric ordering, so Moran's I on its integer code would be an artefact of arbitrary numbering; those are expanded into level indicators before the spatial section touches them.")
+              )
+            ),
+            
+            DTOutput("mgm_dict")
+          )
         )
       )
     )
   ),
 
-  # SECTION 6: CONCLUSION
+  # SECTION 5: CONCLUSION
   nav_panel(
     "Conclusion",
     icon = bsicons::bs_icon("check2-circle"),
+    sec_head("Section 5  |  Synthesis",
+             "Conclusion",
+             paste("What the two analyses say together, and what the limits of",
+                   "the design are.")),
     layout_column_wrap(
       width = 1,
       card(
@@ -773,457 +1454,6 @@ ui <- page_navbar(
 # --- SERVER DEFINITION ---
 server <- function(input, output, session) {
   
-  output$file_status_diag <- renderText({
-    csv_path <- find_app_file(DATA_FILE)
-    shp_path <- find_app_file(SHAPEFILE)
-    manual_loaded <- !is.null(input$file1)
-    
-    paste0(
-      "CSV: ", ifelse(manual_loaded, "Manual Upload", ifelse(!is.null(csv_path), "Auto-Loaded", "Missing")), "\n",
-      "SHP: ", ifelse(!is.null(shp_path), "Loaded", "Missing"), "\n",
-      "SPA: ", ifelse(SP_OK, "Loaded", "Missing"), "\n",
-      "MGM: ", ifelse(MGM_OK, "Loaded", "Missing")
-    )
-  })
-  
-  df_raw <- reactive({
-    data <- NULL
-    if (!is.null(input$file1)) {
-      data <- tryCatch(read.csv(input$file1$datapath, stringsAsFactors = FALSE), error = function(e) NULL)
-    } else {
-      csv_path <- find_app_file(DATA_FILE)
-      if (!is.null(csv_path)) data <- tryCatch(read.csv(csv_path, stringsAsFactors = FALSE), error = function(e) NULL)
-    }
-    if (is.null(data) || nrow(data) == 0) return(NULL)
-    
-    colnames(data) <- trimws(colnames(data))
-    nms <- colnames(data)
-    find_col <- function(cand) { m <- cand[tolower(cand) %in% tolower(nms)]; if (length(m) > 0) m[1] else NULL }
-    
-    c_code <- find_col(c("Study_code", "StudyCode", "code"))
-    c_no   <- find_col(c("Study_no", "StudyNo", "ID"))
-    c_age  <- find_col(c("Age", "age"))
-    c_gen  <- find_col(c("Gender", "Sex", "gender"))
-    c_long <- find_col(c("Longitude.x", "Longitude", "long", "lng"))
-    c_lat  <- find_col(c("Latitude.x", "Latitude", "lat"))
-    
-    if (!is.null(c_code) && c_code != "Study_code") data <- rename(data, Study_code = !!sym(c_code))
-    if (!is.null(c_no)   && c_no   != "Study_no")   data <- rename(data, Study_no = !!sym(c_no))
-    if (!is.null(c_age)  && c_age  != "Age")        data <- rename(data, Age = !!sym(c_age))
-    if (!is.null(c_gen)  && c_gen  != "Gender")     data <- rename(data, Gender = !!sym(c_gen))
-    if (!is.null(c_long) && c_long != "Longitude.x") data <- rename(data, Longitude.x = !!sym(c_long))
-    if (!is.null(c_lat)  && c_lat  != "Latitude.x")  data <- rename(data, Latitude.x = !!sym(c_lat))
-    
-    if ("Age" %in% names(data)) data$Age <- suppressWarnings(as.numeric(as.character(data$Age)))
-    if ("Longitude.x" %in% names(data)) data$Longitude.x <- suppressWarnings(as.numeric(as.character(data$Longitude.x)))
-    if ("Latitude.x" %in% names(data)) data$Latitude.x <- suppressWarnings(as.numeric(as.character(data$Latitude.x)))
-    data
-  })
-  
-  df_processed <- reactive({
-    data <- df_raw()
-    if (is.null(data)) return(NULL)
-    
-    if ("Study_code" %in% names(data)) {
-      data <- data %>% mutate(Sub_Section = substr(as.character(Study_code), 1, 4))
-    } else {
-      data$Sub_Section <- "Unknown"
-    }
-    
-    st_water_col <- grep("standing.water|Standing_Water|126", colnames(data), value = TRUE, ignore.case = TRUE)[1]
-    edu_col      <- grep("Education|Education_Level|52..A02", colnames(data), value = TRUE, ignore.case = TRUE)[1]
-    inc_col      <- grep("Income|Income_Category|61..B02", colnames(data), value = TRUE, ignore.case = TRUE)[1]
-    wat_col      <- grep("Water|Water_Source|112..NEWD09a", colnames(data), value = TRUE, ignore.case = TRUE)[1]
-    toi_col      <- grep("Toilet|Toilet_Type|118..D010a", colnames(data), value = TRUE, ignore.case = TRUE)[1]
-    
-    if (!is.na(wat_col)) data$Water_Source_Filter <- as.character(data[[wat_col]]) else data$Water_Source_Filter <- "All"
-    if (!is.na(toi_col)) data$Toilet_Type_Filter <- as.character(data[[toi_col]]) else data$Toilet_Type_Filter <- "All"
-    if (!is.na(edu_col)) data$Education_Filter <- as.character(data[[edu_col]]) else data$Education_Filter <- "All"
-    if (!is.na(inc_col)) data$Income_Filter <- as.character(data[[inc_col]]) else data$Income_Filter <- "All"
-    if (!is.na(st_water_col)) {
-      data$Standing_Water_Filter <- ifelse(grepl("Yes|1|True", as.character(data[[st_water_col]]), ignore.case = TRUE), "Yes", "No")
-    } else {
-      data$Standing_Water_Filter <- "All"
-    }
-    
-    data
-  })
-  
-  output$dynamic_covariate_filters <- renderUI({
-    data <- df_processed()
-    if (is.null(data)) {
-      return(p("Upload or load dataset to view filters.", style = "font-size: 0.85rem; color: #A0AEC0;"))
-    }
-    
-    w_opts <- c("All", sort(unique(na.omit(data$Water_Source_Filter))))
-    t_opts <- c("All", sort(unique(na.omit(data$Toilet_Type_Filter))))
-    sw_opts <- c("All", sort(unique(na.omit(data$Standing_Water_Filter))))
-    e_opts <- c("All", sort(unique(na.omit(data$Education_Filter))))
-    i_opts <- c("All", sort(unique(na.omit(data$Income_Filter))))
-    
-    tagList(
-      selectInput("cov_water", "Water Access:", choices = w_opts, selected = "All"),
-      selectInput("cov_toilet", "Toilet Facility:", choices = t_opts, selected = "All"),
-      selectInput("cov_swater", "Standing Water Exposure:", choices = sw_opts, selected = "All"),
-      selectInput("cov_edu", "Education Level:", choices = e_opts, selected = "All"),
-      selectInput("cov_inc", "Income Category:", choices = i_opts, selected = "All")
-    )
-  })
-  
-  df_filtered <- reactive({
-    data <- df_processed()
-    if (is.null(data) || nrow(data) == 0) return(NULL)
-    req(input$gender_filter, input$age_range, input$region_filter)
-    
-    filtered <- data
-    if ("Gender" %in% names(filtered)) filtered <- filtered %>% filter(Gender %in% input$gender_filter)
-    if ("Age" %in% names(filtered)) filtered <- filtered %>% filter(!is.na(Age) & Age >= input$age_range[1] & Age <= input$age_range[2])
-    if (input$region_filter != "ALL" && "Sub_Section" %in% names(filtered)) filtered <- filtered %>% filter(Sub_Section == input$region_filter)
-    
-    if (!is.null(input$cov_water) && input$cov_water != "All" && "Water_Source_Filter" %in% names(filtered)) {
-      filtered <- filtered %>% filter(Water_Source_Filter == input$cov_water)
-    }
-    if (!is.null(input$cov_toilet) && input$cov_toilet != "All" && "Toilet_Type_Filter" %in% names(filtered)) {
-      filtered <- filtered %>% filter(Toilet_Type_Filter == input$cov_toilet)
-    }
-    if (!is.null(input$cov_swater) && input$cov_swater != "All" && "Standing_Water_Filter" %in% names(filtered)) {
-      filtered <- filtered %>% filter(Standing_Water_Filter == input$cov_swater)
-    }
-    if (!is.null(input$cov_edu) && input$cov_edu != "All" && "Education_Filter" %in% names(filtered)) {
-      filtered <- filtered %>% filter(Education_Filter == input$cov_edu)
-    }
-    if (!is.null(input$cov_inc) && input$cov_inc != "All" && "Income_Filter" %in% names(filtered)) {
-      filtered <- filtered %>% filter(Income_Filter == input$cov_inc)
-    }
-    
-    filtered
-  })
-  
-  df_pathogen <- reactive({
-    data <- df_filtered()
-    if (is.null(data) || nrow(data) == 0) return(NULL)
-    
-    prefix <- paste0(input$pathogen, "_")
-    target_cols <- grep(paste0("^", prefix), names(data), value = TRUE, ignore.case = TRUE)
-    if (length(target_cols) == 0) return(NULL)
-    meta_cols <- intersect(c("Study_no", "Study_code", "Sub_Section", "Age", "Gender"), names(data))
-    
-    data %>%
-      select(all_of(meta_cols), all_of(target_cols)) %>%
-      pivot_longer(cols = all_of(target_cols), names_to = "Month", values_to = "Result") %>%
-      mutate(
-        Month = sub(paste0("^", prefix), "", Month, ignore.case = TRUE),
-        Result_Clean = trimws(as.character(Result)),
-        Is_Neg = grepl("Neg|No Growth|0", Result_Clean, ignore.case = TRUE),
-        Is_Pos = grepl("Pos|EC|KP|ESBL|E.coli|E. coli", Result_Clean, ignore.case = TRUE) & !Is_Neg,
-        Result_Cat = ifelse(is.na(Result_Clean) | Result_Clean == "" | Result_Clean == "NA", "Missing/NA",
-                            ifelse(Is_Pos, "Positive", "Negative"))
-      )
-  })
-  
-  df_participant_status <- reactive({
-    data <- df_filtered()
-    if (is.null(data) || nrow(data) == 0) return(NULL)
-    
-    prefix <- paste0(input$pathogen, "_")
-    target_cols <- grep(paste0("^", prefix), names(data), value = TRUE, ignore.case = TRUE)
-    if (length(target_cols) == 0) return(NULL)
-    group_cols <- intersect(c("Study_no", "Study_code", "Sub_Section", "Age", "Gender", "Longitude.x", "Latitude.x"), names(data))
-    
-    data %>%
-      pivot_longer(cols = all_of(target_cols), names_to = "Month", values_to = "Result") %>%
-      mutate(
-        Result_Clean = trimws(as.character(Result)),
-        Is_Neg = grepl("Neg|No Growth|0", Result_Clean, ignore.case = TRUE),
-        Is_Pos = grepl("Pos|EC|KP|ESBL|E.coli|E. coli", Result_Clean, ignore.case = TRUE) & !Is_Neg
-      ) %>%
-      group_by(across(all_of(group_cols))) %>%
-      summarise(
-        Total_Tested = sum(!is.na(Result_Clean) & Result_Clean != "" & Result_Clean != "NA", na.rm = TRUE),
-        Pos_Count = sum(Is_Pos, na.rm = TRUE),
-        Marker_Status = case_when(
-          Pos_Count > 0 ~ paste(input$pathogen, "Positive"),
-          Total_Tested > 0 ~ paste(input$pathogen, "Negative"),
-          TRUE ~ "Missing"
-        ),
-        .groups = "drop"
-      )
-  })
-  
-  output$kpi_total_pts <- renderText({
-    data <- df_filtered()
-    if (is.null(data)) "0" else format(nrow(data), big.mark = ",")
-  })
-  
-  output$kpi_pos_rate <- renderText({
-    p_data <- df_pathogen()
-    if (is.null(p_data)) return("0.0%")
-    total <- sum(p_data$Result_Cat != "Missing/NA", na.rm = TRUE)
-    pos <- sum(p_data$Is_Pos, na.rm = TRUE)
-    if (total == 0) "0.0%" else paste0(round((pos / total) * 100, 1), "%")
-  })
-  
-  output$kpi_active_subsections <- renderText({
-    data <- df_filtered()
-    if (is.null(data) || !"Sub_Section" %in% names(data)) "0" else as.character(length(unique(data$Sub_Section)))
-  })
-  
-  output$kzn_map_plot <- renderLeaflet({
-    pts <- df_participant_status()
-    req(pts, "Longitude.x" %in% names(pts), "Latitude.x" %in% names(pts))
-    pts_clean <- pts %>% filter(!is.na(Longitude.x) & !is.na(Latitude.x))
-    req(nrow(pts_clean) > 0)
-    
-    pal <- colorFactor(
-      palette = c("#FF4D4D", "#4CC9F0", "grey70"),
-      domain = c(paste(input$pathogen, "Positive"), paste(input$pathogen, "Negative"), "Missing")
-    )
-    
-    leaflet(pts_clean) %>%
-      addProviderTiles(providers$CartoDB.DarkMatter) %>%
-      addCircleMarkers(
-        lng = ~Longitude.x, lat = ~Latitude.x,
-        color = ~pal(Marker_Status),
-        radius = 6, fillOpacity = 0.85, stroke = FALSE,
-        popup = ~paste0("<b>Participant: </b>", Study_no, "<br><b>Subsection: </b>", Sub_Section, "<br><b>Status: </b>", Marker_Status)
-      ) %>%
-      addLegend("bottomright", pal = pal, values = ~Marker_Status, title = "Marker Status", opacity = 1)
-  })
-  
-  output$prevalence_plot <- renderPlotly({
-    p_data <- df_pathogen()
-    req(p_data)
-    
-    summary_df <- p_data %>%
-      group_by(Month) %>%
-      summarise(
-        Total = sum(Result_Cat != "Missing/NA", na.rm = TRUE),
-        Pos = sum(Is_Pos, na.rm = TRUE),
-        Rate = ifelse(Total > 0, round((Pos / Total) * 100, 1), 0),
-        .groups = "drop"
-      )
-    
-    p <- ggplot(summary_df, aes(x = Month, y = Rate, group = 1, text = paste0("Month: ", Month, "<br>Rate: ", Rate, "%"))) +
-      geom_line(color = "#4CC9F0", linewidth = 1) +
-      geom_point(color = "#4CC9F0", size = 2.5) +
-      labs(title = paste("Monthly Positivity Rate:", input$pathogen), y = "Positivity Rate (%)") +
-      theme_minimal() +
-      theme(
-        plot.background = element_rect(fill = "#1C2541", color = NA),
-        panel.background = element_rect(fill = "#1C2541", color = NA),
-        text = element_text(color = "#E0E6ED"),
-        axis.text = element_text(color = "#E0E6ED")
-      )
-    
-    ggplotly(p, tooltip = "text")
-  })
-  
-  output$prevalence_table <- renderDT({
-    p_data <- df_pathogen()
-    req(p_data)
-    
-    tbl <- p_data %>%
-      group_by(Month) %>%
-      summarise(
-        Total_Samples = sum(Result_Cat != "Missing/NA", na.rm = TRUE),
-        Positives = sum(Is_Pos, na.rm = TRUE),
-        `Positivity Rate` = ifelse(Total_Samples > 0, paste0(round((Positives / Total_Samples) * 100, 1), "%"), "0.0%"),
-        .groups = "drop"
-      )
-    
-    datatable(tbl, options = list(dom = 't', pageLength = 12), rownames = FALSE)
-  })
-  
-  output$subsection_plot <- renderPlotly({
-    p_data <- df_pathogen()
-    req(p_data)
-    
-    p_sub <- p_data %>%
-      filter(Result_Cat != "Missing/NA") %>%
-      group_by(Sub_Section) %>%
-      summarise(
-        Total = n(),
-        Positives = sum(Is_Pos, na.rm = TRUE),
-        Rate = ifelse(Total > 0, round((Positives / Total) * 100, 1), 0),
-        .groups = "drop"
-      )
-    
-    p <- ggplot(p_sub, aes(x = Sub_Section, y = Rate, fill = Sub_Section, text = paste0("Subsection: ", Sub_Section, "<br>Rate: ", Rate, "%"))) +
-      geom_col(show.legend = FALSE) +
-      scale_fill_viridis_d(option = "mako") +
-      labs(title = "Positivity Rate by Subsection", x = "Subsection Code", y = "Rate (%)") +
-      theme_minimal() +
-      theme(
-        plot.background = element_rect(fill = "#1C2541", color = NA),
-        panel.background = element_rect(fill = "#1C2541", color = NA),
-        text = element_text(color = "#E0E6ED"),
-        axis.text = element_text(color = "#E0E6ED")
-      )
-    
-    ggplotly(p, tooltip = "text")
-  })
-  
-  output$demo_summary <- renderPrint({
-    data <- df_filtered()
-    req(data)
-    cat("--- DEMOGRAPHIC SUMMARY ---\n")
-    cat("Target Family:", input$pathogen, "\n")
-    cat("Area Filter:", input$region_filter, "\n")
-    cat("Cohort Sample Size:", nrow(data), "\n\n")
-    if ("Age" %in% names(data)) {
-      cat("Mean Age:", round(mean(data$Age, na.rm = TRUE), 1), "years\n")
-      cat("Median Age:", median(data$Age, na.rm = TRUE), "years\n")
-    }
-  })
-  
-  output$age_dist_plot <- renderPlotly({
-    data <- df_filtered()
-    req(data, "Age" %in% names(data), "Gender" %in% names(data))
-    
-    p <- ggplot(data, aes(x = Age, fill = Gender)) +
-      geom_histogram(binwidth = 5, color = "#1C2541", position = "dodge", alpha = 0.85) +
-      scale_fill_manual(values = c("F" = "#FF4D4D", "M" = "#4CC9F0")) +
-      labs(title = "Age Distribution by Gender", x = "Age (Years)", y = "Count") +
-      theme_minimal() +
-      theme(
-        plot.background = element_rect(fill = "#1C2541", color = NA),
-        panel.background = element_rect(fill = "#1C2541", color = NA),
-        text = element_text(color = "#E0E6ED"),
-        axis.text = element_text(color = "#E0E6ED")
-      )
-    
-    ggplotly(p)
-  })
-  
-  output$raw_data_table <- renderDT({
-    data <- df_filtered()
-    req(data)
-    datatable(data, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
-  })
-  
-  # -----------------------------------------------------------------------
-  # MGM NETWORK PIPELINE
-  # -----------------------------------------------------------------------
-  
-  output$mgm_status_msg <- renderUI({
-    data <- df_raw()
-    if (is.null(data) || nrow(data) < 10) {
-      return(div(class = "alert alert-warning", style = "color: #856404; background-color: #fff3cd; border-color: #ffeeba; padding: 10px; border-radius: 4px;", "Dataset size is too small to fit MGM model. Please ensure full CSV is loaded."))
-    }
-    return(NULL)
-  })
-  
-  output$mgm_network_plot <- renderVisNetwork({
-    AMR_raw_data <- df_raw()
-    req(AMR_raw_data)
-    if (nrow(AMR_raw_data) < 10) return(NULL)
-    
-    AMR_dummies <- dedupe_dataframe(AMR_raw_data)
-    
-    # 1. Longitudinal Target Biological & Resistance Markers
-    marker_cols <- c(
-      "EC_March", "EC_May", "EC_June", "EC_July", "EC_August", "EC_September", "EC_October", "EC_November", "EC_December",
-      "KP_March", "KP_May", "KP_June", "KP_July", "KP_August", "KP_September", "KP_October", "KP_November", "KP_December",
-      "ESBL_March", "ESBL_May", "ESBL_June", "ESBL_July", "ESBL_August", "ESBL_September", "ESBL_October", "ESBL_November", "ESBL_December"
-    )
-    
-    marker_vars <- c()
-    for (m_col in marker_cols) {
-      if (m_col %in% colnames(AMR_dummies)) {
-        if (is.character(AMR_dummies[[m_col]]) || is.factor(AMR_dummies[[m_col]])) {
-          res_m <- create_dummies_from_text(AMR_dummies, m_col)
-          AMR_dummies <- res_m$df
-          marker_vars <- c(marker_vars, res_m$items)
-        } else {
-          AMR_dummies[[m_col]][is.na(AMR_dummies[[m_col]])] <- 0
-          cleaned_m_name <- clean_str(m_col)
-          colnames(AMR_dummies)[colnames(AMR_dummies) == m_col] <- cleaned_m_name
-          marker_vars <- c(marker_vars, cleaned_m_name)
-        }
-      }
-    }
-    marker_vars <- unique(marker_vars[!is.na(marker_vars) & marker_vars != ""])
-    
-    # 2. Extract numeric features for MGM
-    df_mgm_cols <- intersect(c(marker_vars, "Age", "distance_to_nearest_clinic_km"), colnames(AMR_dummies))
-    
-    if (length(df_mgm_cols) < 2) return(NULL)
-    
-    df_mgm <- AMR_dummies %>%
-      select(all_of(df_mgm_cols)) %>%
-      mutate(across(everything(), ~ as.numeric(scale(.))))
-    
-    # Filter non-zero variance columns
-    valid_cols <- sapply(df_mgm, function(x) var(x, na.rm = TRUE) > 0 && !all(is.na(x)))
-    df_mgm <- df_mgm[, valid_cols, drop = FALSE]
-    df_mgm[is.na(df_mgm)] <- 0
-    
-    if (ncol(df_mgm) < 2) return(NULL)
-    
-    # 3. Fit Pairwise MGM with zero EBIC penalty
-    type_vec  <- rep("g", ncol(df_mgm))
-    level_vec <- rep(1, ncol(df_mgm))
-    
-    fit_mgm <- mgm(
-      data = as.matrix(df_mgm),
-      type = type_vec,
-      levels = level_vec,
-      k = 2,
-      lambdaSel = "EBIC",
-      ebicGam = 0,
-      ruleReg = "OR",
-      pbar = FALSE
-    )
-    
-    # 4. Extract adjacency matrix and edge directions
-    wadj <- fit_mgm$pairwise$wadj
-    signs <- fit_mgm$pairwise$signs
-    if (is.null(signs)) signs <- matrix(1, nrow(wadj), ncol(wadj))
-    
-    colnames(wadj) <- rownames(wadj) <- colnames(df_mgm)
-    
-    edges_indices <- which(lower.tri(wadj) & wadj > 0, arr.ind = TRUE)
-    
-    if (nrow(edges_indices) == 0) return(NULL)
-    
-    edges <- data.frame(
-      from = colnames(df_mgm)[edges_indices[, 1]],
-      to = colnames(df_mgm)[edges_indices[, 2]],
-      weight = wadj[edges_indices],
-      sign = signs[edges_indices]
-    ) %>%
-      mutate(
-        width = weight * 5,
-        color = ifelse(sign > 0, "#2B7CE9", "#E41A1C"), # Blue = Positive, Red = Negative
-        title = paste0("<b>Strength:</b> ", round(weight, 3), 
-                       "<br><b>Direction:</b> ", ifelse(sign > 0, "Positive (+)", "Negative (-)"))
-      )
-    
-    # Build node data frame
-    node_degrees <- table(c(edges$from, edges$to))
-    nodes <- data.frame(id = colnames(df_mgm)) %>%
-      mutate(
-        label = make_clean_label(id),
-        value = as.numeric(node_degrees[id]),
-        value = ifelse(is.na(value), 1, value),
-        title = paste0("<b>Variable:</b> ", label)
-      )
-    
-    # 5. Render interactive network
-    visNetwork(nodes = nodes, edges = edges, width = "100%", height = "650px") %>%
-      visNodes(shape = "dot", font = list(size = 16)) %>%
-      visEdges(smooth = FALSE) %>%
-      visOptions(
-        highlightNearest = list(enabled = TRUE, hover = TRUE, degree = 1),
-        nodesIdSelection = TRUE
-      ) %>%
-      visPhysics(
-        solver = "forceAtlas2Based",
-        forceAtlas2Based = list(gravitationalConstant = -25),
-        stabilization = list(iterations = 100)
-      )
-  })
-
   # -----------------------------------------------------------------------
   # SPATIAL AUTOCORRELATION SECTION
   #
@@ -1235,8 +1465,7 @@ server <- function(input, output, session) {
   output$sp_status_msg <- renderUI({
     if (SP_OK) return(NULL)
     div(
-      class = "alert alert-warning",
-      style = "color: #856404; background-color: #fff3cd; border-color: #ffeeba; padding: 12px; border-radius: 4px;",
+      class = "alert note-warn",
       tags$b("Spatial analysis objects not found. "),
       "This section needs mgm_spatial_core.R and mgm_spatial_bundle.rds in the app folder. ",
       "The bundle is written by the export chunk of spatial_autocorrelation_MGM.Rmd, ",
@@ -1333,8 +1562,8 @@ server <- function(input, output, session) {
   output$sp_gplot <- renderPlot({
     g <- sp_global(); req(g)
     g <- g[order(g$moran_I), ]
-    cols <- ifelse(g$q_BH < 0.05, "#B2182B",
-            ifelse(g$p_perm < 0.05, "#EF8A62", "grey72"))
+    cols <- ifelse(g$q_BH < 0.05, "#D6455B",
+            ifelse(g$p_perm < 0.05, "#F58A5E", "#B9C7CC"))
     op <- par(mar = c(4, 11, 2, 1)); on.exit(par(op))
     bp <- barplot(g$moran_I, horiz = TRUE, names.arg = g$variable, las = 1,
                   col = cols, border = NA, cex.names = 0.62,
@@ -1344,7 +1573,7 @@ server <- function(input, output, session) {
     segments(g$moran_I - 1.96 * g$sd_perm, bp,
              g$moran_I + 1.96 * g$sd_perm, bp, col = "grey30")
     legend("bottomright", bty = "n", cex = 0.85, border = NA,
-           fill = c("#B2182B", "#EF8A62", "grey72"),
+           fill = c("#D6455B", "#F58A5E", "#B9C7CC"),
            legend = c("q < 0.05 (BH)", "p < 0.05 only", "not significant"))
     title(main = "Dashed line: E[I] = -1/(n-1) under the null", cex.main = 0.9,
           font.main = 1, col.main = "grey30")
@@ -1393,7 +1622,7 @@ server <- function(input, output, session) {
     m <- leaflet(dd) %>%
       addProviderTiles(providers$CartoDB.DarkMatter) %>%
       addCircleMarkers(lng = ~lon, lat = ~lat, radius = 6, stroke = TRUE,
-                       weight = 1, color = "#0B132B", fillColor = cols,
+                       weight = 1, color = "#041F29", fillColor = cols,
                        fillOpacity = opac, popup = lab)
     if (identical(input$sp_llayer, "lisa")) {
       m <- m %>% addLegend("bottomright", colors = c(unname(PAL_LISA), PAL_NS),
@@ -1414,11 +1643,11 @@ server <- function(input, output, session) {
          ylab = expression(sum(w[ij] * (Z(s[j]) - bar(Z)), j, )),
          main = paste("Moran scatterplot:", input$sp_lvar))
     abline(h = 0, v = 0, col = "grey75")
-    abline(a = 0, b = L$I, col = "#B2182B", lwd = 2)
+    abline(a = 0, b = L$I, col = "#D6455B", lwd = 2)
     legend("topleft", bty = "n", cex = 0.8, legend = names(PAL_LISA), pch = 21,
            col = unname(PAL_LISA), pt.bg = unname(PAL_LISA))
     mtext(sprintf("fitted slope = global I = %.3f", L$I), side = 3, line = -1.3,
-          adj = 0.98, cex = 0.85, col = "#B2182B")
+          adj = 0.98, cex = 0.85, col = "#D6455B")
   })
 
   output$sp_ltab <- renderTable({
@@ -1518,13 +1747,13 @@ server <- function(input, output, session) {
     A_ <- sum(p$W^2); Bd <- sum(rowSums(p$W)^2)
     theory <- p$r * (n * A_ - Bd) / (Bd * (n - 1))
     op <- par(mar = c(4, 4, 3, 1)); on.exit(par(op))
-    hist(p$perm$sim, breaks = 40, col = "grey88", border = "white",
+    hist(p$perm$sim, breaks = 40, col = "#DCE7EA", border = "white",
          main = "Joint-permutation null",
          xlab = "Lee's L", xlim = range(p$perm$sim, p$perm$statistic, theory))
-    abline(v = theory, col = "#2166AC", lwd = 2, lty = 2)
-    abline(v = p$perm$statistic, col = "#B2182B", lwd = 2)
+    abline(v = theory, col = "#1F7A99", lwd = 2, lty = 2)
+    abline(v = p$perm$statistic, col = "#D6455B", lwd = 2)
     legend("topright", bty = "n", cex = 0.75, lwd = 2, lty = c(1, 2),
-           col = c("#B2182B", "#2166AC"),
+           col = c("#D6455B", "#1F7A99"),
            legend = c(sprintf("observed L = %.3f", p$perm$statistic),
                       sprintf("E[L] = r(nA-B)/(B(n-1)) = %.3f", theory)))
     mtext(sprintf("aspatial r = %+.3f    two-sided p = %.4f",
@@ -1558,16 +1787,16 @@ server <- function(input, output, session) {
     for (i in seq_along(nb)) {
       j <- nb[[i]]; if (length(j) == 0L || j[1] == 0L) next
       segments(lon[i], lat[i], lon[j], lat[j],
-               col = grDevices::adjustcolor("#4A6FA5", 0.28), lwd = 0.5)
+               col = grDevices::adjustcolor("#2E7F96", 0.28), lwd = 0.5)
     }
-    points(lon, lat, pch = 21, bg = "#B2182B", col = "white", cex = 0.85)
+    points(lon, lat, pch = 21, bg = "#D6455B", col = "white", cex = 0.9)
   })
 
   output$sp_whist <- renderPlot({
     req(SP_OK)
     cd <- spdep::card(sp_lw()$neighbours)
     op <- par(mar = c(4, 4, 1, 1)); on.exit(par(op))
-    hist(cd, breaks = seq(-0.5, max(cd) + 0.5, 1), col = "#92C5DE",
+    hist(cd, breaks = seq(-0.5, max(cd) + 0.5, 1), col = "#5AB8D4",
          border = "white", main = "", xlab = "Neighbours")
   })
 
@@ -1625,10 +1854,15 @@ server <- function(input, output, session) {
   # -----------------------------------------------------------------------
 
   output$mgm_explorer_status <- renderUI({
-    if (MGM_OK) return(NULL)
+    if (MGM_OK) {
+      if (!length(MGM_NOTES)) return(NULL)
+      return(div(
+        class = "alert note-info",
+        tags$b("Object notes: "),
+        tags$ul(lapply(MGM_NOTES, tags$li))))
+    }
     div(
-      class = "alert alert-warning",
-      style = "color: #856404; background-color: #fff3cd; border-color: #ffeeba; padding: 12px; border-radius: 4px;",
+      class = "alert note-warn",
       tags$b("MGM object not found. "),
       "This section reads output/AIARMS_mgm_spatial.rds. Run 01_clean_AIARMS.R ",
       "and then 01b_add_spatial.R to create it. The MGM Network Analysis tab in ",
@@ -1654,10 +1888,11 @@ server <- function(input, output, session) {
   mgm_selected_vars <- reactive({
     req(MGM_OK)
     switch(input$mgm_preset %|z|% "core",
-           core   = AIARMS_OBJ$core_vars,
-           full   = MGM_REG$var,
+           core   = MGM_CORE,
+           full   = MGM_VARS,
            manual = {
              v <- MGM_REG$var[MGM_REG$group %in% input$mgm_domains]
+             v <- intersect(v, MGM_VARS)
              if (length(input$mgm_vars)) union(v, input$mgm_vars) else v
            })
   })
@@ -1667,7 +1902,12 @@ server <- function(input, output, session) {
   mgm_model <- eventReactive(input$mgm_go, {
     req(MGM_OK)
     v <- mgm_selected_vars()
-    validate(need(length(v) >= 4, "Select at least four variables."))
+    validate(need(length(v) >= 4, paste0(
+      "Only ", length(v), " variable(s) selected; mgm() needs at least four.\n",
+      "Preset: ", input$mgm_preset %|z|% "core",
+      "   |  core set: ", length(MGM_CORE),
+      "   |  all variables: ", length(MGM_VARS),
+      if (length(MGM_NOTES)) paste0("\n", paste("Note:", MGM_NOTES, collapse = "\n")) else "")))
 
     ## Sidebar values, with the sidebar's own defaults as fallbacks so the
     ## start-up fit cannot pass a zero-length argument into mgm().
@@ -1677,15 +1917,16 @@ server <- function(input, output, session) {
     rule   <- input$mgm_rule          %|z|% "AND"
     thr    <- isTRUE(input$mgm_thresh %|z|% TRUE)
 
-    idx <- match(v, AIARMS_OBJ$vars)
+    idx <- match(v, MGM_VARS)
     validate(need(!anyNA(idx), paste(
-      "Not present in the fitted object:", paste(v[is.na(idx)], collapse = ", "))))
+      "Not present in the data:", paste(v[is.na(idx)], collapse = ", "))))
 
     X     <- AIARMS_OBJ$data[, idx, drop = FALSE]
-    type  <- AIARMS_OBJ$type[idx]
-    level <- AIARMS_OBJ$level[idx]
-    labs  <- AIARMS_OBJ$labels[idx]
-    grp   <- MGM_REG$group[idx]
+    type  <- MGM_TYPE[idx]
+    level <- MGM_LEVEL[idx]
+    labs  <- MGM_LABELS[idx]
+    grp   <- MGM_REG$group[match(v, MGM_REG$var)]
+    grp[is.na(grp)] <- "Other"
 
     ## Check the arguments before they reach mgm(), so a bad one is reported
     ## in the UI rather than surfacing as an error from deep inside the package.
@@ -1782,7 +2023,7 @@ server <- function(input, output, session) {
            layout     = input$mgm_layout,
            repulsion  = 1.1,
            pie        = rings,
-           pieColor   = ifelse(m$type == "c", "tomato", "lightblue"),
+           pieColor   = ifelse(m$type == "c", "#F58A5E", "#5AB8D4"),
            groups     = glist,
            color      = unname(PAL_MGM[names(glist)]),
            nodeNames  = m$labels,
@@ -1826,7 +2067,7 @@ server <- function(input, output, session) {
     op <- par(mar = c(4, 12, 2, 2)); on.exit(par(op))
     barplot(r[o], horiz = TRUE, names.arg = m$labels[o], las = 1,
             cex.names = 0.7, xlim = c(0, 1),
-            col = ifelse(m$type[o] == "c", "tomato", "lightblue"),
+            col = ifelse(m$type[o] == "c", "#F58A5E", "#5AB8D4"),
             xlab = "Predictability  (R2 for continuous, normalised accuracy for categorical)")
   })
 
@@ -1875,14 +2116,15 @@ server <- function(input, output, session) {
     # The neighbour average is the spatial lag: each household replaced by the
     # mean of its neighbours. Smoothing this way makes clustering visible that
     # individual points can hide.
-    if (isTRUE(input$mgm_maplag)) v <- as.numeric(AIARMS_OBJ$W %*% v)
+    if (isTRUE(input$mgm_maplag) && !is.null(AIARMS_OBJ$W))
+      v <- as.numeric(AIARMS_OBJ$W %*% v)
     v
   })
 
   output$mgm_map <- renderPlot({
     req(MGM_HAS_SPATIAL)
     m  <- mgm_model(); xy <- AIARMS_OBJ$coords; v <- mgm_map_values()
-    pal_v <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(10)
+    pal_v <- colorRampPalette(c("#1F7A99", "#F2F7F8", "#D6455B"))(10)
     cols  <- pal_v[cut(v, breaks = 10, labels = FALSE)]
     dj <- grep("^Neighbours within", m$labels)[1]
     cx <- if (isTRUE(input$mgm_mapsize) && !is.na(dj))
@@ -1909,6 +2151,50 @@ server <- function(input, output, session) {
     cat(sprintf("  expected under no autocorrelation: %+.3f\n",
                 -1 / (nrow(m$X) - 1)))
   })
+
+  # -----------------------------------------------------------------------
+  # LANDING PAGE
+  # -----------------------------------------------------------------------
+
+  output$lp_kpi_hh <- renderText(
+    if (SP_OK) format(nrow(SPB$X), big.mark = ",") else "-")
+
+  output$lp_kpi_months <- renderText(
+    if (is.na(N_MONTHS)) "-" else as.character(N_MONTHS))
+
+  output$lp_kpi_nodes <- renderText(if (MGM_OK) as.character(nrow(MGM_REG)) else "-")
+  output$lp_kpi_cov   <- renderText(if (SP_OK) as.character(length(SPB$cov_vars)) else "-")
+
+  output$lp_kpi_sig <- renderText({
+    if (!SP_OK) return("-")
+    as.character(sum(SPB$global$q_BH < 0.05, na.rm = TRUE))
+  })
+
+  output$lp_data_status <- renderUI({
+    ok  <- function(x) if (x) bsicons::bs_icon("check-circle-fill") else
+                              bsicons::bs_icon("exclamation-circle-fill")
+    col <- function(x) if (x) "#3DDC97" else "#FFC15E"
+    row <- function(lab, x, note)
+      div(style = paste0("color:", col(x), "; font-size:0.88rem; margin-top:6px;"),
+          ok(x), " ", tags$b(lab), tags$span(style = "color:#8FAFBC;", paste0("  ", note)))
+    csv <- !is.null(find_app_file(DATA_FILE))
+    tagList(
+      hr(),
+      row("Survey CSV",   csv,    if (csv) "loaded" else "not found"),
+      row("MGM object",   MGM_OK, if (MGM_OK) paste(nrow(MGM_REG), "nodes") else "not built"),
+      row("Spatial results", SP_OK,
+          if (SP_OK) paste(length(SPB$cov_vars), "covariates") else "not built"),
+      if (length(BUILD_LOG))
+        div(style = "color:#8FAFBC; font-size:0.8rem; margin-top:10px; line-height:1.5;",
+            tags$b(style = "color:#22D3EE;", "Built this session:"), tags$br(),
+            HTML(paste(BUILD_LOG, collapse = "<br/>")))
+    )
+  })
+
+  # The landing-page buttons move the navbar rather than duplicating content.
+  observeEvent(input$jump_method,  nav_select("main_nav", "Methodology"))
+  observeEvent(input$jump_spatial, nav_select("main_nav", "Spatial Autocorrelation"))
+  observeEvent(input$jump_mgm,     nav_select("main_nav", "MGM Explorer"))
 
   output$mgm_dict <- renderDT({
     req(MGM_OK)
