@@ -204,32 +204,83 @@ if (BUILD_ON_START) {
   if (length(BUILD_LOG)) for (l in BUILD_LOG) message("  ", l)
 }
 
-SP_OK <- FALSE; SPB <- NULL
+SP_OK <- FALSE; SPB <- NULL; SP_LOAD_ERR <- NULL
 local({
   core_path   <- find_app_file(SPATIAL_CORE)
   bundle_path <- find_app_file(SPATIAL_BUNDLE)
-  if (!is.null(core_path) && !is.null(bundle_path)) {
-    ok <- tryCatch({
-      source(core_path, local = FALSE)
-      SPB  <<- readRDS(bundle_path)
-      SP_OK <<- all(c("X", "meta", "coords", "lonlat", "cov_vars",
-                      "sp_vars", "global", "lee", "k") %in% names(SPB))
-      TRUE
-    }, error = function(e) FALSE)
-    if (!ok) SP_OK <<- FALSE
+  if (is.null(core_path) || is.null(bundle_path)) {
+    here <- tryCatch(sort(list.files(".", recursive = TRUE, no.. = TRUE)),
+                     error = function(e) character(0))
+    SP_LOAD_ERR <<- paste0(
+      "Missing ",
+      paste(c(if (is.null(core_path)) SPATIAL_CORE,
+              if (is.null(bundle_path)) SPATIAL_BUNDLE), collapse = " and "),
+      ". Working directory: ", getwd(),
+      ". Files deployed alongside the app: ",
+      if (length(here)) paste(utils::head(here, 40), collapse = ", ") else "(none)",
+      ".")
+    return(invisible(NULL))
   }
+  res <- tryCatch({
+    source(core_path, local = FALSE)
+    SPB <<- readRDS(bundle_path)
+    need <- c("X", "meta", "coords", "lonlat", "cov_vars",
+              "sp_vars", "global", "lee", "k")
+    if (!is.list(SPB) || !all(need %in% names(SPB)))
+      stop(bundle_path, " is missing: ",
+           paste(setdiff(need, names(SPB)), collapse = ", "))
+    SP_OK <<- TRUE
+    NULL
+  }, error = function(e) conditionMessage(e))
+  if (!is.null(res)) { SP_OK <<- FALSE; SP_LOAD_ERR <<- res }
 })
 
+# Loading the MGM object must never be able to stop the app. Anything wrong
+# with the file leaves MGM_OK FALSE and a message for the section to display;
+# the rest of the dashboard carries on. A readable .rds is not enough -- it has
+# to actually be the object 01b builds, so the structure is checked before use.
 MGM_OK <- FALSE; AIARMS_OBJ <- NULL; MGM_REG <- NULL
+MGM_OBJ_PATH <- NULL; MGM_LOAD_ERR <- NULL
 local({
   obj_path <- find_app_file(MGM_OBJECT)
-  if (!is.null(obj_path)) {
-    tryCatch({
-      AIARMS_OBJ <<- readRDS(obj_path)
-      MGM_REG    <<- AIARMS_OBJ$registry
-      MGM_OK     <<- TRUE
-    }, error = function(e) MGM_OK <<- FALSE)
+  if (is.null(obj_path)) {
+    # On a deployed server you cannot inspect the container, so list what is
+    # actually there. If the file is in the repo but missing from this listing,
+    # it was not bundled -- regenerate manifest.json and republish.
+    here <- tryCatch(sort(list.files(".", recursive = TRUE, no.. = TRUE)),
+                     error = function(e) character(0))
+    MGM_LOAD_ERR <<- paste0(
+      MGM_OBJECT, " was not found. Working directory: ", getwd(),
+      ". Files deployed alongside the app: ",
+      if (length(here)) paste(utils::head(here, 40), collapse = ", ") else "(none)",
+      ".")
+    return(invisible(NULL))
   }
+  obj <- tryCatch(readRDS(obj_path), error = function(e) e)
+  if (inherits(obj, "error")) {
+    MGM_LOAD_ERR <<- paste0("Could not read ", obj_path, ": ",
+                            conditionMessage(obj))
+    return(invisible(NULL))
+  }
+  bad <- NULL
+  if (!is.list(obj))                                 bad <- "it is not a list"
+  else if (!all(c("data", "registry") %in% names(obj)))
+    bad <- paste0("it has no $", paste(setdiff(c("data", "registry"), names(obj)),
+                                       collapse = " and no $"))
+  else if (is.null(ncol(obj$data)) || ncol(obj$data) < 1)
+    bad <- "$data is not a matrix or data frame"
+  else if (is.null(nrow(obj$registry)) || nrow(obj$registry) < 1)
+    bad <- "$registry is empty"
+  if (!is.null(bad)) {
+    MGM_LOAD_ERR <<- paste0(obj_path, " is not the object 01b_add_spatial.R ",
+                            "builds: ", bad, ". Rebuild it, or point MGM_OBJECT ",
+                            "at the right file.")
+    return(invisible(NULL))
+  }
+  AIARMS_OBJ   <<- obj
+  MGM_REG      <<- obj$registry
+  MGM_OBJ_PATH <<- obj_path
+  MGM_OK       <<- TRUE
 })
 MGM_HAS_SPATIAL <- MGM_OK && !is.null(AIARMS_OBJ$coords)
 
@@ -241,7 +292,8 @@ MGM_HAS_SPATIAL <- MGM_OK && !is.null(AIARMS_OBJ$coords)
 # says nothing about the cause.
 MGM_VARS <- MGM_TYPE <- MGM_LEVEL <- MGM_LABELS <- MGM_CORE <- NULL
 MGM_NOTES <- character(0)
-if (MGM_OK) {
+if (MGM_OK) tryCatch({
+  n_col      <- ncol(AIARMS_OBJ$data)
   MGM_VARS   <- AIARMS_OBJ$vars   %|z|% colnames(AIARMS_OBJ$data) %|z|% MGM_REG$var
   MGM_TYPE   <- AIARMS_OBJ$type   %|z|% MGM_REG$type
   MGM_LEVEL  <- AIARMS_OBJ$level  %|z|% MGM_REG$level
@@ -252,7 +304,7 @@ if (MGM_OK) {
   if (is.null(AIARMS_OBJ$type))   MGM_NOTES <- c(MGM_NOTES, "type taken from the registry")
   if (is.null(AIARMS_OBJ$level))  MGM_NOTES <- c(MGM_NOTES, "level taken from the registry")
   if (is.null(AIARMS_OBJ$labels)) MGM_NOTES <- c(MGM_NOTES, "labels taken from the registry")
-  if (is.null(MGM_CORE) || length(MGM_CORE) < 4) {
+  if (length(MGM_CORE) < 4) {
     MGM_CORE  <- MGM_VARS
     MGM_NOTES <- c(MGM_NOTES,
       "no usable core_vars in the object, so \"Core set\" falls back to all variables")
@@ -265,11 +317,19 @@ if (MGM_OK) {
     MGM_NOTES <- c(MGM_NOTES, paste("core variables absent from the data and dropped:",
                                     paste(drop_core, collapse = ", ")))
   }
-  if (length(MGM_VARS) != ncol(AIARMS_OBJ$data))
+  if (length(MGM_VARS) != n_col)
     MGM_NOTES <- c(MGM_NOTES, sprintf(
-      "WARNING: %d variable names for %d data columns",
-      length(MGM_VARS), ncol(AIARMS_OBJ$data)))
-}
+      "WARNING: %d variable names for %d data columns", length(MGM_VARS), n_col))
+  if (length(MGM_TYPE) != n_col || length(MGM_LEVEL) != n_col) {
+    MGM_OK       <<- FALSE
+    MGM_LOAD_ERR <<- sprintf(
+      "type (%d) and level (%d) do not match the %d data columns, so the model cannot be specified.",
+      length(MGM_TYPE), length(MGM_LEVEL), n_col)
+  }
+}, error = function(e) {
+  MGM_OK       <<- FALSE
+  MGM_LOAD_ERR <<- paste("Could not interpret the MGM object:", conditionMessage(e))
+})
 
 # Palettes. Named apart from anything already in the app so nothing is masked.
 PAL_LISA <- c("High-High" = "#FF6B6B", "Low-Low"  = "#22D3EE",
@@ -1466,7 +1526,8 @@ server <- function(input, output, session) {
     if (SP_OK) return(NULL)
     div(
       class = "alert note-warn",
-      tags$b("Spatial analysis objects not found. "),
+      tags$b("Spatial analysis objects not available. "),
+      if (!is.null(SP_LOAD_ERR)) tags$span(SP_LOAD_ERR, tags$br()),
       "This section needs mgm_spatial_core.R and mgm_spatial_bundle.rds in the app folder. ",
       "The bundle is written by the export chunk of spatial_autocorrelation_MGM.Rmd, ",
       "which in turn needs output/AIARMS_mgm_spatial.rds from 01_clean_AIARMS.R and 01b_add_spatial.R."
@@ -1863,7 +1924,8 @@ server <- function(input, output, session) {
     }
     div(
       class = "alert note-warn",
-      tags$b("MGM object not found. "),
+      tags$b("MGM object not available. "),
+      if (!is.null(MGM_LOAD_ERR)) tags$span(MGM_LOAD_ERR, tags$br()),
       "This section reads output/AIARMS_mgm_spatial.rds. Run 01_clean_AIARMS.R ",
       "and then 01b_add_spatial.R to create it. The MGM Network Analysis tab in ",
       "the Application & Dashboard section is independent of this and continues ",

@@ -5003,11 +5003,20 @@
     }
   },
   "files": {
+    "01_clean_AIARMS.R": {
+      "checksum": "6553123fd95afc5de3d9b9faa63f344f"
+    },
+    "01b_add_spatial.R": {
+      "checksum": "2c802cf09fa187d44fc1612f51b160e1"
+    },
     "03_mgm_explorer_app_1.R": {
       "checksum": "7e0748171c6ba922832ace725619490d"
     },
+    "AIARMS_mgm_spatial.rds": {
+      "checksum": "dc3ecf0e27a0bc2056727f7fc652170c"
+    },
     "app.R": {
-      "checksum": "1d8c0e295a37ce12fe1d139dcc0f7f18"
+      "checksum": "bf3211652ab1506ad81aec722cf40768"
     },
     "full_AIARMS_df.csv": {
       "checksum": "549233aaa2944a873a408b4be55f5841"
@@ -5031,10 +5040,10 @@
       "checksum": "b6a404dddd690fb13c3c241ec58b5fd5"
     },
     "mgm_spatial_bundle.rds": {
-      "checksum": "8e853ccdbd3bf84d4bb3c6dc1ba84376"
+      "checksum": "caca3efdf5ca95c9fbb912ceda8c665b"
     },
     "mgm_spatial_core.R": {
-      "checksum": "8b65c3a4848b9ebe3b2d2d56b926d409"
+      "checksum": "b6869f5fcce4ce2b6d50deefb78aa58b"
     },
     "output/AIARMS_clean.csv": {
       "checksum": "2422d0aa7595680533d406a733b9842e"
