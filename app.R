@@ -49,6 +49,18 @@ find_app_file <- function(filename) {
 # If any is absent the corresponding section shows a status message and the
 # rest of the dashboard is unaffected.
 
+# Raise this whenever the cleaning pipeline or mgm_spatial_core.R changes in a
+# way that alters the numbers. Any bundle carrying a different value is treated
+# as stale and rebuilt (or refused, on a deployed server).
+#   2  w_ii = 0 fix in 01b's weights matrix; blank survey items no longer
+#      coded as "No"; joincount_cat column fix.
+#   3  site encoding is "dummy_full": one binary node per fieldwork code, all
+#      seven present and named. Site-to-site edges are suppressed on display.
+#   4  Lee's L removed throughout. Section 2.1 of the report defines Moran's I,
+#      Geary's C and the local Moran only, and the bivariate statistic was never
+#      plotted in the app, so it was carried without being used.
+BUNDLE_SCHEMA <- 4L
+
 SPATIAL_CORE   <- "mgm_spatial_core.R"
 SPATIAL_BUNDLE <- "mgm_spatial_bundle.rds"
 MGM_OBJECT     <- file.path("output", "AIARMS_mgm_spatial.rds")
@@ -146,7 +158,7 @@ run_pipeline <- function() {
 # mgm_spatial_core.R, so the statistics cannot diverge from the report; only
 # the assembly is restated here so the app can stand alone.
 build_spatial_bundle <- function(obj_path, out_path,
-                                 k = 8, nsim_global = 9999, nsim_lee = 19999) {
+                                 k = 8, nsim_global = 9999) {
   A  <- readRDS(obj_path)
   E  <- expand_registry(A)
   xy <- mgm_coords(A)
@@ -157,14 +169,37 @@ build_spatial_bundle <- function(obj_path, out_path,
   G <- global_table(E$X, xy, cov_vars, wcfg = wcfg, nsim = nsim_global, seed = 1)
   G <- merge(G, E$meta[, c("var", "group", "label")], by.x = "variable", by.y = "var")
   G <- G[order(-G$moran_I), ]
-  LM <- lee_matrix_fast(E$X, xy, cov_vars, wcfg = wcfg, nsim = nsim_lee, seed = 1)
 
   saveRDS(list(X = E$X, meta = E$meta, coords = xy, lonlat = A$lonlat,
                registry = A$registry, W_01b = A$W,
                cov_vars = cov_vars, sp_vars = sp_vars,
-               global = G, lee = LM, site_group = A$site_group,
-               k = k, built = Sys.time()), out_path)
+               global = G, site_group = A$site_group,
+               ## carried so every label, tooltip and printout can name the
+               ## fieldwork site rather than an integer code
+               site_labels   = A$site_labels,
+               site_encoding = A$site_encoding,
+               k = k, built = Sys.time(),
+               ## bumped whenever the shape or the meaning of the bundle
+               ## changes, so a stale .rds is refused rather than displayed
+               schema = BUNDLE_SCHEMA), out_path)
   invisible(out_path)
+}
+
+# A bundle is stale if it predates the object it was derived from or the core
+# script that computed it. Without this check a corrected pipeline leaves the
+# OLD numbers on screen, because step 2 below used to run only when the bundle
+# was missing entirely -- silently the worst possible failure mode for a
+# dashboard whose results go into a report.
+bundle_is_stale <- function() {
+  b <- find_app_file(SPATIAL_BUNDLE)
+  if (is.null(b)) return(TRUE)
+  newer_than_bundle <- function(f) {
+    p <- find_app_file(f)
+    !is.null(p) && isTRUE(file.mtime(p) > file.mtime(b))
+  }
+  if (newer_than_bundle(MGM_OBJECT) || newer_than_bundle(SPATIAL_CORE)) return(TRUE)
+  sc <- tryCatch(readRDS(b)$schema, error = function(e) NULL)
+  !identical(sc, BUNDLE_SCHEMA)
 }
 
 # Number of distinct sampling months, read from the CSV header only.
@@ -189,11 +224,12 @@ if (BUILD_ON_START) {
     if (ok) BUILD_LOG <- c(BUILD_LOG, "Built output/AIARMS_mgm_spatial.rds from the cleaning scripts.")
   }
 
-  # Step 2: the spatial results. About 35 seconds; only ever done once.
+  # Step 2: the spatial results. About 35 seconds. Rebuilt whenever the bundle
+  # is missing OR stale -- see bundle_is_stale().
   if (!is.null(find_app_file(MGM_OBJECT)) &&
-      is.null(find_app_file(SPATIAL_BUNDLE)) &&
+      bundle_is_stale() &&
       !is.null(find_app_file(SPATIAL_CORE))) {
-    message("Building ", SPATIAL_BUNDLE, " (about 35 seconds, once) ...")
+    message("Building ", SPATIAL_BUNDLE, " (about 35 seconds) ...")
     tryCatch({
       source(find_app_file(SPATIAL_CORE), local = FALSE)
       build_spatial_bundle(find_app_file(MGM_OBJECT), SPATIAL_BUNDLE)
@@ -225,10 +261,19 @@ local({
     source(core_path, local = FALSE)
     SPB <<- readRDS(bundle_path)
     need <- c("X", "meta", "coords", "lonlat", "cov_vars",
-              "sp_vars", "global", "lee", "k")
+              "sp_vars", "global", "k")
     if (!is.list(SPB) || !all(need %in% names(SPB)))
       stop(bundle_path, " is missing: ",
            paste(setdiff(need, names(SPB)), collapse = ", "))
+    ## A bundle from an earlier pipeline holds numbers this version of the
+    ## core script would not produce. Showing them would be worse than showing
+    ## nothing, so say so instead.
+    if (!identical(SPB$schema, BUNDLE_SCHEMA))
+      stop(basename(bundle_path), " was built by an earlier version of the ",
+           "pipeline (schema ", SPB$schema %|z|% "none", "; this app expects ",
+           BUNDLE_SCHEMA, "). Delete it and re-run 01_clean_AIARMS.R, ",
+           "01b_add_spatial.R and the spatial document so it is rebuilt. ",
+           "On a deployed copy, rebuild locally and redeploy the .rds files.")
     SP_OK <<- TRUE
     NULL
   }, error = function(e) conditionMessage(e))
@@ -282,7 +327,6 @@ local({
   MGM_OBJ_PATH <<- obj_path
   MGM_OK       <<- TRUE
 })
-MGM_HAS_SPATIAL <- MGM_OK && !is.null(AIARMS_OBJ$coords)
 
 # The explorer was written against an object carrying vars / type / level /
 # labels / core_vars. Older builds of 01b do not all store every one of them,
@@ -330,6 +374,278 @@ if (MGM_OK) tryCatch({
   MGM_OK       <<- FALSE
   MGM_LOAD_ERR <<- paste("Could not interpret the MGM object:", conditionMessage(e))
 })
+
+## ---------------------------------------------------------------------------
+## NODE_NOTES -- the written justification for each node
+## ---------------------------------------------------------------------------
+## Only the PROSE lives here. Type, level, domain, label and the summary
+## statistics are read live from the fitted object, so this block can never
+## drift out of step with the model that is actually loaded: change
+## SITE_ENCODING or a recode in 01_clean_AIARMS.R and the factual columns
+## follow automatically, while the explanation stays attached to its variable.
+## A node with no entry here still appears, with its facts and a note saying
+## the justification has not been written yet.
+NODE_NOTES <- list(
+  `ESBL_pos_n` = list(
+    what = "The number of monthly stool/rectal cultures in which an ESBL-producing organism was recovered, over up to nine sampling months. The free-text laboratory entries were normalised first — twelve spelling variants of an ESBL result appear in the export — and a cell naming no organism is treated as missing rather than guessed.",
+    why  = "A tally of events, so a Poisson node. It is the primary AMR outcome of the study: ESBL phenotype is the marker with the clearest resistance interpretation of the three, and the one with enough variation to model (mean 2.0 of up to 9 months).",
+    read = "An edge to a WASH or socio-economic node is the result the report exists to find: that exposure predicts ESBL carriage <b>conditional on everything else in the model, including the number of months the household was actually cultured</b>. An edge to <code>Months_tested</code> is not that — it is sampling effort."
+  ),
+  `EC_pos_n` = list(
+    what = "Months positive for <i>Escherichia coli</i>. Carriage is near-universal: 97.1% of all readable EC cells across the cohort are positive (952 of 981).",
+    why  = "A count, so Poisson, on the same footing as the other two markers.",
+    read = "Read this node with care and say why in the text. Because carriage is saturated, most of the variance in the count comes from <b>how many months the household was cultured</b>, not from whether it was colonised — the correlation with <code>Months_tested</code> is 0.93. Expect its dominant edge to be with exposure.",
+    flag = "<b>Why keep it at all?</b> So that all three target markers named in the introduction are represented in the model rather than quietly dropped. That is a defensible choice, but it has to be declared: an earlier version of the pipeline excluded this node precisely because it carries so little independent information, and a reader comparing the two would otherwise wonder."
+  ),
+  `KP_pos_n` = list(
+    what = "Months positive for <i>Klebsiella pneumoniae</i>. Two cells in the KP columns record an E. coli result mis-filed by the laboratory; these become missing rather than being read as negatives.",
+    why  = "A count, so Poisson.",
+    read = "Of the three markers this one sits at the most informative prevalence — neither saturated like EC nor as sparse as ESBL — so its correlation with exposure (0.66) leaves the most room for a genuine carriage signal. If any carriage node is going to show structure, this is the one to look at first."
+  ),
+  `Months_tested` = list(
+    what = "The number of months in which the household returned a readable culture result for any of the three organisms. Households were sampled an unequal number of times, from none to all nine.",
+    why  = "<code>mgm()</code> has <b>no offset term</b>, so a rate model is not available. Conditioning on the exposure as its own covariate is the closest equivalent, and that is the whole reason this node is in the model. It is declared <code>\"g\"</code> rather than <code>\"p\"</code> so that <code>scale = TRUE</code> z-scores it onto the same footing as the other continuous covariates.",
+    read = "An edge from a carriage node to this one is a statement about <b>fieldwork, not epidemiology</b>. Its value in the model is that it absorbs that dependence so the remaining carriage edges are closer to rates than to raw counts.",
+    flag = "<b>Declare the type choice.</b> This is a bounded 0–9 count declared Gaussian, which is inconsistent with <code>HHsize</code> — also a bounded count — being declared Poisson. Both are defensible; the inconsistency is not, unless it is stated. Four households have <b>zero</b> cultured months, so their carriage counts are structural zeros rather than observed zeros."
+  ),
+  `Age` = list(
+    what = "Age in years of the responding household member.",
+    why  = "One of only two genuinely continuous nodes in the model. Unbounded in practice, measured on a real interval scale, and well away from any floor or ceiling — the textbook case for a conditional Gaussian.",
+    read = "Edges carry a sign. Age is also the cleanest <b>negative control</b> in the spatial analysis: there is no mechanism by which one household's respondent age should predict a neighbour's, and Moran's <i>I</i> duly finds nothing (−0.022). If it had found clustering here, the method would be suspect."
+  ),
+  `Sex` = list(
+    what = "Sex of the responding household member, coded 1 for female. Respondents were overwhelmingly women — a feature of daytime household surveys, and worth one sentence in the limitations.",
+    why  = "Binary, coded 0/1 so that <code>binarySign = TRUE</code> can define a direction for its edges.",
+    read = "An edge here describes the <b>respondent</b>, not the household. Given the 76:24 imbalance, treat a weak edge cautiously: there is limited information in the minority class at n = 162."
+  ),
+  `HHsize` = list(
+    what = "Number of people living in the household. The questionnaire asks for people <b>excluding</b> the respondent, so one is added.",
+    why  = "A count of people, so a Poisson node.",
+    read = "Carries a sign against continuous partners. It also feeds <code>Crowding</code>, so the two are related by construction — an edge between them is not a finding, and they should not be interpreted as independent evidence of the same thing."
+  ),
+  `Crowding` = list(
+    what = "Household size divided by the number of rooms the household lives in. A classic transmission-relevant exposure and the other genuinely continuous node.",
+    why  = "A ratio of two counts is a continuous quantity on a real scale, so Gaussian.",
+    read = "Interpretable directly: higher values mean more people sharing less space. An edge to a carriage node would be the clearest mechanistic result the model could produce.",
+    flag = "<b>A ceiling worth mentioning.</b> The rooms question tops out at \"More than seven\", which is mapped to 8. Households in very large dwellings therefore have their crowding slightly overstated. The effect is small — few households are affected — but the mapping is a decision, not a measurement."
+  ),
+  `Education` = list(
+    what = "The highest level of education completed by anyone in the household, collapsed from 18 raw response options into three: 1 = primary or incomplete secondary, 2 = completed secondary, 3 = tertiary.",
+    why  = "Declared unordered with three levels. The collapse is necessary — 18 states cannot be estimated at n = 162 — and the nominal declaration is the conservative choice, since <code>mgm</code> treats every <code>\"c\"</code> node as unordered regardless of whether the underlying scale is ordered.",
+    read = "One grey edge per partner, no sign, with the per-level parameters recoverable through <code>showInteraction()</code>. In the spatial analysis it expands into three indicators and only the tertiary one clusters.",
+    flag = "<b>The most attackable variable in the analysis.</b> The recode assigns level 3 to any response matching <i>Diploma, Certificate, degree, BTech</i> or <i>Post graduate</i> — which sweeps in \"Certificate with &lt;Std 10/Gr.12\" (18 households) and \"Diploma with &lt;Std 10/ Gr.12\" (7), whose own labels say they were obtained without matric. Move those 25 to level 1 and the clustering of <code>Education_3</code> falls from <code>I = 0.115, p = 0.006</code> to <code>I = 0.043, p = 0.17</code>. Whichever definition you adopt, report the other."
+  ),
+  `WorkStatus` = list(
+    what = "Main activity of the respondent: 1 = employed in any form, 2 = unemployed, 3 = pensioner, student or other.",
+    why  = "The clearest case in the whole registry for a nominal declaration. These three states have <b>no natural ordering</b> — a pensioner is not \"more\" of anything than an unemployed person — so any numeric coding would be arbitrary, and the model's answer must not depend on which arbitrary coding was used.",
+    read = "Use this node as the worked example when explaining why <code>\"c\"</code> exists. It is also the cleanest illustration of why the spatial analysis expands categoricals: Moran's <i>I</i> on the codes 1, 2, 3 would assert that unemployment sits midway between employment and retirement."
+  ),
+  `IncomeBand` = list(
+    what = "Monthly income before deductions, mapped from the questionnaire's eleven bands onto an ordinal score from 0 (no income) to 9. \"Prefer not to say\" is treated as missing.",
+    why  = "Genuinely ordered, and far more informative as a single ordinal score than as eleven categorical states that cannot be estimated — 65 of 162 households sit in one band alone. The trade-off is that Gaussian treatment assumes the bands are equally spaced, which they are not: they roughly double.",
+    read = "An edge carries a sign, readable as \"higher income band\". Because the bands are logarithmic in width, read the magnitude loosely.",
+    flag = "<b>State the assumption.</b> Treating a band index as Gaussian imposes equal spacing on bands that double in width. A log-income midpoint would be more faithful; the band index was kept because it needs no assumption about where within a band a household sits."
+  ),
+  `Grant` = list(
+    what = "Whether the household receives any government grant or subsidy monthly.",
+    why  = "Binary, 0/1.",
+    read = "A direct measure of state support and a useful partner to <code>IncomeBand</code>, which it is not redundant with — grant receipt is about eligibility and access, income about total resources."
+  ),
+  `FormalDwelling` = list(
+    what = "Whether the main dwelling is a house or brick/concrete structure, or a room/flatlet on a property — as against a traditional structure or an informal shack.",
+    why  = "Binary, 0/1.",
+    read = "One of the most robust spatial results (<code>I = 0.147, q = 0.006</code>) and, importantly, one that <b>strengthens</b> under complete-case deletion rather than weakening. Lead with this and refuse collection as the two findings least sensitive to the cleaning decisions."
+  ),
+  `PipedInside` = list(
+    what = "Whether water is piped inside the dwelling, as against a yard tap, a public standpipe or another source. Two versions of the water question exist in the export — an older single-choice item and a newer checkbox block — and the answer is taken from the old item where present, falling back to the checkboxes.",
+    why  = "Binary, 0/1, reduced to the distinction that matters for contamination risk: water inside the dwelling or not.",
+    read = "Low prevalence (16%) means limited power. No spatial structure was found, but with 26 positives that absence is weak evidence rather than a null result."
+  ),
+  `FlushToilet` = list(
+    what = "Flush or pour-flush toilet, to a sewer or a septic tank, as against a pit latrine, a public toilet or none.",
+    why  = "Binary, 0/1. The intermediate group — pit latrine with a slab, 14 households — joins the unimproved arm, since it is too small to support a state of its own at this sample size.",
+    read = "A three-level sanitation ladder would be preferable in principle; it was collapsed for power, and that collapse should be stated rather than left implicit in the coding."
+  ),
+  `ToiletShared` = list(
+    what = "Whether the household's toilet is shared with people who are not household members.",
+    why  = "Binary, 0/1.",
+    read = "Clusters (<code>I = 0.121, q = 0.044</code>), which makes mechanistic sense — a shared facility is shared by neighbours, so the exposure is defined at the street level. Note that it <b>weakens under complete-case deletion</b>, so report it as among the less robust of the significant set."
+  ),
+  `ToiletFloods` = list(
+    what = "Whether the household's toilet ever floods.",
+    why  = "Binary, 0/1.",
+    read = "Directly relevant to faecal–oral transmission and to wastewater as a medium, which is why it earns a place despite showing no spatial structure of its own."
+  ),
+  `OpenDefecation` = list(
+    what = "Whether any household member ever has to defecate outside the toilet — anything other than \"Never\".",
+    why  = "Binary, 0/1. The frequency scale (a few times a year through most days) is collapsed to ever/never because the higher frequencies have only a handful of households each.",
+    read = "At 9% prevalence this node has very little power. Its value is descriptive: reporting that open defecation is rare in this cohort is itself a finding for a WASH study, and an absent edge here should not be read as evidence of no effect."
+  ),
+  `StandingWater` = list(
+    what = "Whether there is standing water around the dwelling.",
+    why  = "Binary, 0/1.",
+    read = "An environmental exposure measured at the household but determined largely by drainage, which is a street-level property — so a priori a candidate for clustering, though none was found here.",
+    flag = "<b>Eight households never answered this item.</b> Under the original coding those blanks were read as \"no standing water\". They are now treated as missing and imputed, which is the honest handling but does move the prevalence."
+  ),
+  `Flooding` = list(
+    what = "Whether the area around the house floods at some time.",
+    why  = "Binary, 0/1.",
+    read = "The second strongest spatial result (<code>I = 0.225, q = 0.004</code>), and mechanistically the most interesting one for a wastewater study: flooding mobilises faecal contamination across properties, so it is exactly the kind of exposure that should be shared between neighbours.",
+    flag = "<b>This result depends on a cleaning decision, and the decision goes in your favour.</b> Thirty-two of 164 households never answered the flooding item. The original rule read those blanks as \"does not flood\"; they are now treated as missing. Under the old coding <code>I = 0.116</code>; under the honest coding <code>I = 0.225</code>; restricted to the 131 households that actually answered, <code>I = 0.206 (p = 0.0004)</code>. The old rule was attenuating the finding, not manufacturing it — which is the sentence to write."
+  ),
+  `RefuseCollected` = list(
+    what = "Whether household refuse is removed by the local authority or a private company, as against an own or communal dump.",
+    why  = "Binary, 0/1.",
+    read = "The strongest spatial result in the study (<code>I = 0.243, q = 0.004</code>, Geary's <code>C = 0.75</code>), and the one to lead with. A refuse round is delivered street by street, so the clustering is not merely consistent with the mechanism — it is what the mechanism predicts. It also strengthens under complete-case deletion, so it is robust to the imputation."
+  ),
+  `HandwashScore` = list(
+    what = "A practice score counting how many of eight prompts (before eating, after using the toilet, after changing a nappy, and so on) the household reports washing hands at. Where a household left some items unanswered, the score is prorated over the items it did answer.",
+    why  = "A sum of indicators is exactly what a Poisson node is for. Treating the eight items as separate binary nodes was the earlier approach and had to be abandoned — two of them were positive in 160 of 161 households, which is near-zero variance.",
+    read = "Heavily left-skewed: the mean is 7.52 out of 8, so most households report near-universal handwashing and there is very little variance to detect an edge with. An absent edge here is uninformative about behaviour; it is mostly a statement about the ceiling of the instrument.",
+    flag = "<b>Half the sample left at least one item blank.</b> Eighty-two of 164 households skipped between one and seven of the eight prompts. Summing \"== Yes\" over the raw block counted every blank as a no and pushed those scores down; the prorated score corrects that, and households answering fewer than five items are treated as missing."
+  ),
+  `CareMonthly` = list(
+    what = "How often the household visits a doctor, clinic, community health centre or hospital, collapsed to monthly-or-more against less often.",
+    why  = "Binary, 0/1. \"Never\" has two observations and is merged with \"Yearly\".",
+    read = "A proxy for healthcare contact, which matters for AMR because facility exposure is a recognised route for resistant organisms. Note the export's spelling — the raw value is \"Montly\" — which the recode matches deliberately."
+  ),
+  `HIVinHH` = list(
+    what = "Whether anyone in the household is reported as living with HIV.",
+    why  = "Binary, 0/1.",
+    read = "Survives correction in the spatial analysis (<code>I = 0.112, q = 0.044</code>), and it is the result that complicates the clean \"infrastructure clusters, individual attributes do not\" narrative. Name it rather than leaving it out. Its clustering plausibly reflects the spatial distribution of prevalence and of care-seeking rather than anything about households, and a self-reported household-level measure of this kind carries obvious reporting bias."
+  ),
+  `ChronicAny` = list(
+    what = "Whether any household member is currently managing a chronic condition, excluding HIV. Derived from a select-all question; any response other than \"No chronic conditions\" counts.",
+    why  = "Binary, 0/1. The individual conditions are too sparse to model separately at this sample size.",
+    read = "A crude indicator of chronic care contact. The collapse loses a great deal — hypertension and asthma have quite different implications for antibiotic exposure — so treat an edge here as a pointer rather than a finding."
+  ),
+  `DiarrSeverity` = list(
+    what = "Typical severity when someone in the household experiences diarrhoea: 1 = no one does, 2 = mild and resolving in one to two days, 3 = moderate or severe.",
+    why  = "Declared unordered with three levels, although the levels are substantively ordered. The registry governs, and <code>mgm</code> treats every <code>\"c\"</code> node as nominal.",
+    read = "The most direct symptomatic measure of enteric infection in the survey, so a natural partner for the WASH block. Level 1 is not really a severity at all — it is an absence — so the three states mix a presence/absence question with a severity question."
+  ),
+  `AbxNoRx` = list(
+    what = "Whether any household member has ever taken antibiotics without a prescription from a medical professional.",
+    why  = "Binary, 0/1.",
+    read = "The most direct behavioural driver of AMR in the whole questionnaire, which is why it belongs in the model regardless of whether it produces an edge. Self-reported, so under-reporting is likely and a null result is weak evidence."
+  ),
+  `AbxSource` = list(
+    what = "Where the household usually obtains antibiotics: 1 = does not source them, 2 = government facility only, 3 = private GP or pharmacy, with or without a government facility.",
+    why  = "Genuinely nominal — these are different routes, not more or less of anything.",
+    read = "Badly unbalanced: 137 of 162 households sit in level 2, leaving 14 and 11 in the others. Any edge involving this node is being driven by very few households and should be treated as hypothesis-generating.",
+    flag = "<b>This node also carries the most missingness</b> of any variable in the registry — seven households — and is the main driver of the 22 households lost to complete-case deletion in the sensitivity analysis."
+  ),
+  `AbxCourse` = list(
+    what = "How long household members typically continue antibiotic treatment: 1 = completes the course as advised, 2 = stops when symptoms resolve, 3 = does not take antibiotics.",
+    why  = "Nominal. Level 3 is not a point on a completion scale at all — it is non-use — which is precisely why an ordered coding would be wrong here.",
+    read = "Level 2 is the behaviour that drives resistance, and it is the one to look at. This node is a good illustration for the methodology of why <code>\"c\"</code> is not just \"a variable with a few values\": the three states are not commensurable."
+  ),
+  `StreetFood` = list(
+    what = "Whether the household consumes street food of any type.",
+    why  = "Binary, 0/1, collapsed from the type of street food consumed.",
+    read = "A food-safety exposure route. Reaches <code>p = 0.019</code> in the spatial analysis but does not survive correction across 43 tests — a good worked example of why the BH adjustment is reported, and of the difference between a raw and an adjusted p-value."
+  ),
+  `MeatFreq` = list(
+    what = "The highest frequency band at which any meat type is consumed, from the questionnaire's frequency × meat-type grid, scored 0 (never) to 5 (daily). Two versions of the question exist in the export and both are read.",
+    why  = "Ordered frequency bands, so the ordering is real information and a Gaussian treatment preserves it. Declared <code>\"g\"</code> for the same reason as <code>IncomeBand</code>.",
+    read = "Very concentrated — 108 of 162 households sit at band 4 — so there is little variance to work with. No household scores 0, so the intended 0–5 range is really 1–5 in practice."
+  ),
+  `AnimalsKept` = list(
+    what = "Whether the household keeps any animals.",
+    why  = "Binary, 0/1.",
+    read = "The One Health link: livestock and poultry are a recognised reservoir for resistant organisms, so this node connects the household survey to the wider AMR literature the introduction cites."
+  ),
+  `ManureUse` = list(
+    what = "Whether the household uses manure of any kind in its garden — human manure from a compost toilet, human manure applied directly, or chicken, cow or horse manure.",
+    why  = "Binary, 0/1, an OR across the five manure items the household answered.",
+    read = "Now clusters (<code>I = 0.111, q = 0.049</code>), which makes sense as a shared agricultural practice within a settlement. A direct environmental route from animal or human waste to household exposure, so it is substantively interesting for a wastewater study.",
+    flag = "<b>This node changed the most under the missing-data correction.</b> Sixty-three of 164 households left all five manure items blank, and the original rule read that as \"does not use manure\" — which took the prevalence from 71% down to 33% and buried the result. Those rows are now missing and imputed. This is the clearest single example of why the blank-as-no rule mattered, and it is worth using as the illustration in the text."
+  ),
+  `NN_density` = list(
+    what = "The number of <b>other</b> study households within 150 m. Median nearest-neighbour distance in the cohort is about 17 m, so a 150 m radius captures the immediate cluster rather than the whole settlement.",
+    why  = "A count of points in a disc, so Poisson.",
+    read = "This is <b>local context</b>, one of three distinct notions of space in the model. It answers \"how built-up are your immediate surroundings?\" and is the spatial variable most likely to connect to crowding and to the WASH block. Note it counts <i>study</i> households, not all households, so it is a proxy for density conditional on the sampling design.",
+    flag = "<b>Spatial by construction, so excluded from the substantive spatial results</b> and reported as a positive control instead. It is defined from the coordinates, so testing it for spatial autocorrelation would be circular."
+  ),
+  `Site_ARUE` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUE, taken from the alphabetic prefix of the household's study code. 46 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUE than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default.",
+    flag = "<b>The collinearity caveat applies to all seven site nodes.</b> Inside a covariate's own regression the seven dummies plus the intercept are rank-deficient, so the lasso picks among equivalent solutions and <i>which</i> site carries an effect can move between bootstrap samples even when the effect itself is stable. Check anything you report against the stability assessment, and against a refit with a single categorical Site node, which is identified."
+  ),
+  `Site_ARUF` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUF, taken from the alphabetic prefix of the household's study code. 3 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUF than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default.",
+    flag = "<b>Three households.</b> Every parameter involving this node is estimated from those three rows, and its positive-control Moran's I of 0.25 sits far below the 0.71–0.91 of every other site. Read any edge that turns on this node as hypothesis-generating, not as a result."
+  ),
+  `Site_ARUL` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUL, taken from the alphabetic prefix of the household's study code. 24 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUL than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default."
+  ),
+  `Site_ARUO` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUO, taken from the alphabetic prefix of the household's study code. 32 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUO than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default."
+  ),
+  `Site_ARUS` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUS, taken from the alphabetic prefix of the household's study code. 17 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUS than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default."
+  ),
+  `Site_ARUT` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUT, taken from the alphabetic prefix of the household's study code. 25 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUT than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default."
+  ),
+  `Site_ARUU` = list(
+    what = "A 0/1 indicator for membership of fieldwork area ARUU, taken from the alphabetic prefix of the household's study code. 15 of the 162 households belong to it.",
+    why  = "Binary, 0/1, so that each site carries its own sign. This is <b>area membership</b> — the first of the three notions of space in the model — capturing discrete between-settlement differences: a shared standpipe, a shared sewer line, a shared refuse round. One node per site means every fieldwork code appears as itself, with no site held out as a reference and no edge that reads as a contrast against another site.",
+    read = "An edge to a covariate says that covariate is more or less common in ARUU than elsewhere, conditional on everything else. <b>Ignore edges between site nodes.</b> Every household belongs to exactly one site, so the seven indicators sum to 1 in every row and the clique among them is an artefact of the coding — the app zeroes that block by default."
+  ),
+  `Site` = list(
+    what = "A single categorical node whose seven levels are the fieldwork codes ARUE, ARUF, ARUL, ARUO, ARUS, ARUT and ARUU, taken from the alphabetic prefix of each household's study code. This is the encoding in force when SITE_ENCODING is \"categorical\" rather than \"dummy_full\".",
+    why  = "Unordered with seven levels. Every site is a level in its own right, none is held out as a reference, and the model is <b>identified</b> -- which the seven-dummy encoding is not, because those dummies sum to 1 in every row. The cost is that a categorical node with more than two levels carries several parameters per edge, so the network shows one aggregated weight per partner and no sign.",
+    read = "One grey edge per partner. Use <code>showInteraction()</code> to recover the per-level parameters, and map the integer codes back with the site labels carried on the object. If you need per-site signs in the network instead, switch to <code>dummy_full</code> and read the caveat attached to the site nodes.",
+    flag = "<b>Only one of the two site encodings is active at a time.</b> Whichever is loaded, the other is a one-word change in 01b_add_spatial.R, and reporting both is the honest way to handle the identification trade-off."
+  )
+)
+
+## Factual columns, read from whatever object is loaded rather than stored.
+node_summary <- function(v) {
+  if (!MGM_OK) return("")
+  j <- match(v, MGM_VARS); if (is.na(j)) return("")
+  x  <- AIARMS_OBJ$data[, j]
+  ty <- MGM_TYPE[j]; lv <- MGM_LEVEL[j]
+  if (ty == "c" && lv == 2)
+    sprintf("%d of %d positive (%.1f%%)", sum(x == 1), length(x), 100 * mean(x))
+  else if (ty == "c") {
+    lab <- if (identical(v, "Site") && length(AIARMS_OBJ$site_labels) >= lv)
+             AIARMS_OBJ$site_labels else as.character(sort(unique(x)))
+    paste(sprintf("%s = %d", lab, as.integer(table(x))), collapse = ",  ")
+  } else
+    sprintf("mean %.2f, sd %.2f, range %g-%g", mean(x), sd(x), min(x), max(x))
+}
+
+node_type_label <- function(j) {
+  if (MGM_TYPE[j] == "g") "\"g\" - Gaussian"
+  else if (MGM_TYPE[j] == "p") "\"p\" - Poisson"
+  else if (MGM_LEVEL[j] == 2) "\"c\" - binary 0/1"
+  else sprintf("\"c\" - %d levels", MGM_LEVEL[j])
+}
+
+node_facts <- function() {
+  if (!MGM_OK) return(NULL)
+  data.frame(
+    Variable = MGM_VARS,
+    Label    = MGM_LABELS,
+    Type     = vapply(seq_along(MGM_VARS), node_type_label, character(1)),
+    Domain   = MGM_REG$group[match(MGM_VARS, MGM_REG$var)],
+    Summary  = vapply(MGM_VARS, node_summary, character(1)),
+    Written  = ifelse(MGM_VARS %in% names(NODE_NOTES), "yes", "-"),
+    stringsAsFactors = FALSE, row.names = NULL)
+}
 
 # Palettes. Named apart from anything already in the app so nothing is masked.
 PAL_LISA <- c("High-High" = "#FF6B6B", "Low-Low"  = "#22D3EE",
@@ -383,13 +699,57 @@ chiprow <- function(...) div(class = "chiprow", ...)
 defrow <- function(term, desc)
   div(class = "defrow", div(class = "term", term), div(class = "desc", desc))
 
+# --- Guide tabs --------------------------------------------------------------
+# Each sidebar control is one collapsed accordion panel: the control's name and
+# a one-line hint in the header, and inside, what changing it does and where
+# that explanation comes from. Sources are the report's reference list only; a
+# row with no source describes what the code does and claims no article.
+GUIDE_NO_SOURCE <- "Source: app behaviour. Describes what the code does; no article is claimed."
+
+guide_row <- function(control, hint, effect, source = NULL)
+  accordion_panel(
+    title = div(class = "gtitle",
+                span(class = "gname", control),
+                span(class = "ghint", hint)),
+    value = control,
+    div(class = "gbody", effect),
+    div(class = "gsrc",
+        if (is.null(source)) GUIDE_NO_SOURCE else tagList("Source: ", source)))
+
+guide_group <- function(title, ...)
+  div(class = "ggroup",
+      div(class = "ggroup-title", title),
+      accordion(..., open = FALSE, multiple = TRUE, class = "guide-acc"))
+
+guide_refs <- function(...)
+  div(class = "ggroup",
+      accordion(accordion_panel(title = div(class = "gtitle", span(class = "gname", "References")),
+                                value = "References", ..., icon = bsicons::bs_icon("journal-text")),
+                open = FALSE, class = "guide-acc"))
+
+guide_ref <- function(...) p(class = "gref", ...)
+
+# The intro block of a guide, with one button that opens or closes every panel.
+guide_intro <- function(...)
+  div(class = "guide-intro",
+      ...,
+      div(class = "guide-bar",
+          span(class = "eqnote",
+               "Every citation is to the report's reference list. 'App behaviour' ",
+               "means the row explains what the code does, with no article claimed."),
+          tags$button(type = "button", class = "btn btn-sm btn-outline-info guide-toggle",
+                      onclick = "swamToggleGuide(this)", "Expand all")))
+
+# Card headings with the bioluminescent shimmer (see .glow in the stylesheet).
+glow_header <- function(title) card_header(span(class = "glow", title))
+
 # Every section opens with the same banner: an eyebrow label, a heading and one
 # line saying what the section answers. Consistency here is what stops the app
 # reading as a pile of unrelated tabs.
 sec_head <- function(eyebrow, title, lede) {
   div(class = "sec-head",
       div(class = "eyebrow", eyebrow),
-      tags$h2(title),
+      tags$h2(class = "glow", title),
       p(class = "lede", lede))
 }
 
@@ -414,6 +774,15 @@ ui <- page_navbar(
       .table, .table td, .table th, .dataTables_wrapper { color: #DCEEF3 !important; }
       .form-control, .form-select { background-color: #041F29 !important; color: #DCEEF3 !important; border: 1px solid #16576B !important; }
       .value-box { background-color: #0B3140 !important; border: 1px solid #16576B !important; }
+      /* Keyless dark basemap: invert plain OSM tiles rather than pull a
+         keyed dark-tile service. Applies to the tile images only. */
+      .swam-dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(0.93)
+                                 contrast(0.86) saturate(0.55); }
+      .leaflet-container .leaflet-control-attribution {
+        background: rgba(4,31,41,0.72) !important; color: #BBD7E0 !important; }
+      .leaflet-container .leaflet-control-attribution a { color: #22D3EE !important; }
+      .sp-basemap { margin-bottom: 6px; }
+      .sp-basemap .form-group { margin-bottom: 0; }
       .mgm-card { background-color: #FFFFFF !important; color: #1A202C !important; border: 1px solid #C3D9E0 !important; }
       .mgm-card p, .mgm-card h5, .mgm-card div { color: #1A202C !important; }
       .navbar-brand { font-weight: 700 !important; letter-spacing: 0.06em; }
@@ -530,7 +899,75 @@ ui <- page_navbar(
                       font-size: 0.9rem; }
       .defrow .desc { flex: 1; color: #DCEEF3; font-size: 0.92rem;
                       line-height: 1.55; }
+
+      /* --- Guide tabs: one collapsed panel per control --- */
+      .guide-intro { max-width: 62em; margin-bottom: 16px; }
+      .guide-bar { display: flex; align-items: center; justify-content: space-between;
+                   gap: 10px 18px; flex-wrap: wrap; }
+      .guide-bar .eqnote { flex: 1 1 22em; }
+      .guide-toggle { flex: 0 0 auto; font-weight: 600; }
+      .ggroup { margin-bottom: 18px; }
+      .ggroup-title { color: #22D3EE; font-weight: 700; font-size: 0.9rem;
+                      letter-spacing: 0.02em; margin: 0 0 8px 2px; }
+      .guide-acc .accordion-item { background: #072A36 !important;
+                                   border-color: #16576B !important; }
+      .guide-acc .accordion-button { background: #072A36 !important;
+                                     color: #DCEEF3 !important; font-weight: 400;
+                                     padding: 10px 14px !important;
+                                     border-bottom: none !important;
+                                     box-shadow: none !important; }
+      .guide-acc .accordion-button:not(.collapsed) {
+        background: #0B3140 !important; box-shadow: inset 3px 0 0 #22D3EE !important; }
+      .guide-acc .accordion-button:hover .gname { color: #22D3EE; }
+      .guide-acc .accordion-button:focus-visible { outline: 2px solid #22D3EE;
+                                                   outline-offset: -2px; }
+      .guide-acc .accordion-body { background: #0B3140 !important; border: none !important;
+                                   border-top: 1px solid #16576B !important;
+                                   padding: 12px 16px 14px 17px; }
+      .gtitle { display: flex; flex-direction: column; gap: 1px; }
+      .gname { font-weight: 700; color: #DCEEF3; font-size: 0.9rem;
+               transition: color 0.15s ease; }
+      .ghint { color: #8FAFBC; font-size: 0.82rem; }
+      .gbody { font-size: 0.9rem; line-height: 1.6; color: #DCEEF3; max-width: 68ch; }
+      .gsrc { color: #8FAFBC; font-size: 0.8rem; font-style: italic;
+              margin-top: 8px; max-width: 68ch; }
+      .gref { font-size: 0.85rem; color: #BBD7E0; padding-left: 1.6em;
+              text-indent: -1.6em; margin-bottom: 6px; }
+
+      /* --- Glowing headings: light moving through water. Cool colours only,
+             because warm colours on this page are reserved for signals. --- */
+      .glow { display: inline-block;
+              background-image: linear-gradient(100deg, #22D3EE 0%, #3DDC97 18%,
+                                #BDF4FF 36%, #22D3EE 50%, #3DDC97 68%,
+                                #BDF4FF 86%, #22D3EE 100%);
+              background-size: 200% 100%;
+              -webkit-background-clip: text; background-clip: text;
+              color: transparent; -webkit-text-fill-color: transparent;
+              animation: swam-flow 9s linear infinite,
+                         swam-breathe 4.5s ease-in-out infinite alternate; }
+      @keyframes swam-flow { from { background-position: 0% 50%; }
+                             to   { background-position: 200% 50%; } }
+      @keyframes swam-breathe {
+        from { filter: drop-shadow(0 0 2px rgba(34,211,238,0.30)); }
+        to   { filter: drop-shadow(0 0 9px rgba(34,211,238,0.75)); } }
+      .card-header:has(.glow) { box-shadow: inset 0 -1px 0 rgba(34,211,238,0.35);
+                                font-size: 1.12rem !important; padding: 12px 20px !important; }
+      @media (prefers-reduced-motion: reduce) {
+        .glow { animation: none; filter: drop-shadow(0 0 5px rgba(34,211,238,0.5)); }
+      }
     "))),
+    tags$script(HTML("
+      function swamToggleGuide(btn) {
+        var root = btn.closest('.guide'); if (!root) return;
+        var panels = root.querySelectorAll('.accordion-collapse');
+        var anyClosed = Array.prototype.some.call(panels,
+          function (el) { return !el.classList.contains('show'); });
+        panels.forEach(function (el) {
+          var c = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+          if (anyClosed) c.show(); else c.hide();
+        });
+        btn.textContent = anyClosed ? 'Collapse all' : 'Expand all';
+      }")),
     withMathJax(),                 # without this the $$...$$ render as plain text
     div(class = "swam-subtitle", "Spatial Wastewater & Antimicrobial Monitor")
   ),
@@ -578,51 +1015,60 @@ ui <- page_navbar(
       col_widths = c(7, 5),
 
       card(
-        card_header("Why this study"),
+        glow_header("Why this study"),
         card_body(
           class = "theory",
-          p("Wastewater-based epidemiology (WBE) has emerged as a powerful tool in ",
-            "public health management, particularly after the COVID-19 pandemic. ",
-            "An effective outbreak response requires fast and accurate detection, ",
-            "efficient allocation of resources, and the ability to react ",
-            "predictively rather than retrospectively. Clinical trials remain the ",
-            "standard choice, but they are expensive, time consuming, invasive, ",
-            "and require the consent of the individuals involved, which makes them ",
-            "poorly suited as a standalone method. WBE complements them: it is ",
-            "inexpensive, non-invasive, allows real-time decision making, and is ",
-            "less biased."),
+          p("Water-based epidemiology (WBE) has emerged as a powerful tool in ",
+            "public health management, specifically after the COVID-19 pandemic. ",
+            "COVID-19 showed that an effective outbreak response requires fast and ",
+            "accurate detection, efficient allocation of resources to people in ",
+            "need, and the ability to react predictively rather than ",
+            "retrospectively."),
+          p("Clinical surveillance and WBE have the same objective but different ",
+            "ways of achieving it. Clinical surveillance records the state of an ",
+            "individual who has consented to testing. WBE measures specific ",
+            "biological markers shed by individuals through waste within a ",
+            "predefined area, which captures asymptomatic and untested people. ",
+            "The two are ", tags$b("complementary"), " tools in disease detection: ",
+            "WBE is inexpensive, non-invasive and less biased than clinical ",
+            "surveillance used alone, and together they improve the speed of ",
+            "disease detection and mapping. Its only real restriction is whether ",
+            "the disease of focus leaves a biological marker when shed -- the ",
+            "detection of polio in Gaza is one example."),
           p("Spatial statistics shifts the viewpoint from where something is to ",
             "why it may occur there. Demographic-based mapping connects physical ",
             "location with the characteristics of the population present, treated ",
             "as covariates. Elevation, for instance, was found to be associated ",
             "with the distribution of cholera during the 2008-2009 epidemic in ",
             "Harare, Zimbabwe."),
-          p("This report focuses on antimicrobial resistance (AMR): the process of ",
-            "a micro-organism surviving despite the presence of an antibiotic. The ",
-            "global rise in AMR threatens to undo decades of progress in treating ",
-            "bacterial infectious disease, which is why it is studied here in ",
-            "place of COVID-19, and specifically how resistance can be identified ",
-            "through covariates.")
+          p("This report focuses on antimicrobial resistance (AMR): the process by ",
+            "which a microorganism survives despite the presence of an antibiotic. ",
+            "An estimated 4.95 million deaths were associated with bacterial AMR ",
+            "in 2019, of which 1.27 million were directly attributed to it -- ",
+            "placing AMR among the leading causes of death worldwide, ahead of ",
+            "both HIV/AIDS and malaria, with sub-Saharan Africa carrying the ",
+            "highest burden."),
+          p("AMR suits WBE for two reasons. It is ", tags$b("endemic and ",
+            "slow-moving"), ", so a relatively stable pattern can be estimated and ",
+            "evaluated; and its markers are ", tags$b("shed into wastewater"), ", ",
+            "which allows easy integration with existing wastewater-based ",
+            "surveillance.")
         )
       ),
 
       card(
-        card_header("The four aims"),
+        glow_header("The three aims"),
         card_body(
           div(class = "aim", tags$b("1. "),
-              "Investigate the significance of demographic factors through mixed ",
-              "graphical models, then connect those factors to physical location ",
-              "and to AMR markers."),
+              "Investigate the significance of demographic factors through the ",
+              "use of mixed graphical models, and then connect those factors to ",
+              "both physical location and AMR markers."),
           div(class = "aim", tags$b("2. "),
-              "Use the MGM results to make connections between these factors, and ",
-              "focus on those showing high correlation to both location and the ",
-              "markers."),
+              "Use spatial autocorrelation on these covariates to investigate ",
+              "which factors are spatially significant within KwaZulu-Natal."),
           div(class = "aim", tags$b("3. "),
-              "Apply spatial autocorrelation to those covariates to establish ",
-              "which are spatially significant within KwaZulu-Natal."),
-          div(class = "aim", tags$b("4. "),
-              "Draw conclusions that improve the effectiveness of public health ",
-              "intervention.")
+              "Interpret what was gathered to be able to improve the ",
+              "effectiveness of public health intervention.")
         )
       )
     ),
@@ -631,7 +1077,7 @@ ui <- page_navbar(
       col_widths = c(4, 4, 4),
 
       card(
-        card_header("Target pathogens and markers"),
+        glow_header("Target pathogens and markers"),
         card_body(
           tags$ul(
             tags$li(tags$b("Escherichia coli (EC). "),
@@ -648,12 +1094,21 @@ ui <- page_navbar(
       ),
 
       card(
-        card_header("The data"),
+        glow_header("The data"),
         card_body(
-          p("A household survey conducted in KwaZulu-Natal, carrying variables of ",
-            "several measurement types at once: binary resistance markers, ",
-            "categorical demographic and sanitation responses, count variables ",
-            "and continuous measurements."),
+          p("A household survey conducted in KwaZulu-Natal in 2025. 162 ",
+            "households were sampled across seven study codes -- ARUE, ARUO, ",
+            "ARUT, ARUL, ARUS, ARUU and ARUF -- each individually geolocated, ",
+            "over a study area spanning roughly two kilometres in each ",
+            "direction. Alongside the survey responses, each household was ",
+            "tested over a period of up to nine months for the three AMR ",
+            "markers."),
+          p("The responses carry several measurement types at once: binary ",
+            "indicators, categorical demographic and sanitation responses, ",
+            "counts and continuous measurements. Typical correlation and ",
+            "regression tools assume a single type, and forcing the data into ",
+            "one would discard information and distort the associations being ",
+            "detected."),
           p("That mixture is exactly why a mixed graphical model is required ",
             "rather than a single-type network, and why each node in this app ",
             "carries a declared type and level."),
@@ -662,19 +1117,19 @@ ui <- page_navbar(
       ),
 
       card(
-        card_header("How to use this app"),
+        glow_header("How to use this app"),
         card_body(
           p(span(class = "step-num", "1"),
             "Read the ", tags$b("Methodology"), " for the definitions and ",
             "equations every result below is computed from."),
           p(span(class = "step-num", "2"),
-            tags$b("Spatial Autocorrelation"), " answers aim 3 -- Moran's I, ",
-            "Geary's C and the LISA, under a weights matrix you choose."),
-          p(span(class = "step-num", "3"),
-            tags$b("MGM Explorer"), " answers aims 1 and 2 -- the conditional ",
+            tags$b("MGM Explorer"), " answers aim 1 -- the conditional ",
             "dependency network, refitted live as you change its settings."),
+          p(span(class = "step-num", "3"),
+            tags$b("Spatial Autocorrelation"), " answers aim 2 -- Moran's I, ",
+            "Geary's C and the LISA, under a weights matrix you choose."),
           p(span(class = "step-num", "4"),
-            tags$b("Conclusion"), " draws the two together.")
+            tags$b("Conclusion"), " answers aim 3, drawing the two together.")
         )
       )
     )
@@ -768,8 +1223,30 @@ ui <- page_navbar(
           eqbox("Sample variance",
                 "$$S^2 = \\tfrac{1}{n-1}\\sum_{i=1}^{n}\\bigl(Z(\\mathbf{s}_i) - \\bar{Z}\\bigr)^2$$"),
           hr(),
+          h5("The spatial weights"),
+          p("Every statistic below is conditional on \\(\\mathbf{W} = [w_{ij}]\\), ",
+            "with \\(w_{ii} = 0\\) throughout. The report states the general ",
+            "critical-distance form:"),
+          eqbox("Equation (1)  |  Spatial weights",
+                "$$w_{ij} = \\begin{cases} 1, & 0 < \\lVert \\mathbf{s}_i - \\mathbf{s}_j \\rVert \\le d \\\\ 0, & \\text{otherwise} \\end{cases}$$",
+                "Rows are then standardised to sum to one."),
+          div(
+            class = "alert note-warn",
+            tags$b("What the analysis actually uses. "),
+            "A distance band is not usable on this cohort. Moran's I decays ",
+            "monotonically with distance here, so choosing d at the first peak ",
+            "of the correlogram lands at 50-75 m and leaves 14 to 28 of the 162 ",
+            "households with no neighbours at all. The analysis therefore uses ",
+            "k = 8 nearest neighbours, symmetrised and row-standardised, with ",
+            "w_ii = 0 -- every household keeps a neighbourhood, and each ",
+            "neighbour carries weight 1/k. The distance-band and inverse-distance ",
+            "matrices are offered in the sidebar as the sensitivity check they ",
+            "are. The Methodology section of the report should define the ",
+            "k-nearest-neighbour rule as the primary one."
+          ),
+          hr(),
           h5("Moran's I"),
-          eqbox("Equation (1)  |  Moran's I",
+          eqbox("Equation (2)  |  Moran's I",
                 "$$I = \\frac{n}{(n-1)\\,S^2\\,w_{\\cdot\\cdot}} \\sum_{i=1}^{n} \\sum_{j=1}^{n} w_{ij} \\bigl(Z(\\mathbf{s}_i) - \\bar{Z}\\bigr)\\bigl(Z(\\mathbf{s}_j) - \\bar{Z}\\bigr)$$",
                 "Cross-products about the mean, weighted by proximity."),
           chiprow(
@@ -786,7 +1263,7 @@ ui <- page_navbar(
           p("Geary's \\(C\\) measures the same phenomenon through squared ",
             "differences between neighbouring values rather than through ",
             "cross-products about the mean:"),
-          eqbox("Equation (2)  |  Geary's C",
+          eqbox("Equation (3)  |  Geary's C",
                 "$$C = \\frac{1}{2\\,S^2\\,w_{\\cdot\\cdot}} \\sum_{i=1}^{n} \\sum_{j=1}^{n} w_{ij} \\bigl(Z(\\mathbf{s}_i) - Z(\\mathbf{s}_j)\\bigr)^2$$",
                 "Squared differences between neighbouring values."),
           chiprow(
@@ -837,7 +1314,7 @@ ui <- page_navbar(
           p("where \\(f\\) is a function, \\(y_i\\) is the observed value at ",
             "\\(i\\), and \\(y_{J_i}\\) are the values observed in the ",
             "neighbourhood \\(J_i\\) of \\(i\\). The local Moran statistic is"),
-          eqbox("Equation (3)  |  Local Moran",
+          eqbox("Equation (4)  |  Local Moran",
                 "$$I_i = \\frac{n\\,(Z_i - \\bar{Z}) \\sum_{j} w_{ij} (Z_j - \\bar{Z})}{\\sum_{i} (Z_i - \\bar{Z})^2}$$",
                 "Sums over all observations in proportion to the global I."),
           chiprow(
@@ -895,7 +1372,7 @@ ui <- page_navbar(
           p("The joint distribution factorises over the cliques of \\(G\\), where a ",
             "clique \\(C \\subseteq V\\) is a subset of nodes in which every pair ",
             "is connected:"),
-          eqbox("Equation (4)  |  Clique factorisation",
+          eqbox("Equation (5)  |  Clique factorisation",
                 "$$P(X) = \\exp\\left( \\sum_{C \\in \\mathcal{C}} \\theta_C \\phi_C(X_C) - \\Phi(\\theta) \\right)$$",
                 "All structural information sits in the zero pattern of theta."),
           p("where \\(\\mathcal{C}\\) is the set of all cliques, \\(\\phi_C\\) is ",
@@ -933,7 +1410,7 @@ ui <- page_navbar(
           p("To obtain estimates that are exactly zero, and hence a sparse and ",
             "interpretable graph, each regression carries an \\(\\ell_1\\) penalty, ",
             "giving the LASSO:"),
-          eqbox("Equation (5)  |  LASSO",
+          eqbox("Equation (8)  |  LASSO",
                 "$$\\hat{\\theta} = \\arg\\min_{\\theta} \\left\\{ -\\mathcal{L}(\\theta, X) + \\lambda \\|\\theta\\|_1 \\right\\}$$",
                 "The L1 penalty is what makes estimates exactly zero."),
           p("Larger values of \\(\\lambda\\) shrink more parameters to zero, ",
@@ -965,7 +1442,7 @@ ui <- page_navbar(
           hr(),
           h5("Selecting the regularisation parameter"),
           p("This study uses the extended Bayesian information criterion:"),
-          eqbox("Equation (6)  |  Extended BIC",
+          eqbox("Equation (10)  |  Extended BIC",
                 "$$\\mathrm{EBIC}_{\\gamma}(\\hat{\\theta}) = -2L(\\hat{\\theta}) + \\hat{s}_0 \\log n + 2\\gamma\\, \\hat{s}_0 \\log p$$",
                 "The lambda minimising this is retained."),
           p("The value of \\(\\lambda\\) minimising this is retained. The ",
@@ -981,48 +1458,6 @@ ui <- page_navbar(
             "the model rather than redrawing a cached one."
           )
         )
-      ),
-
-      nav_panel(
-        "Data Preparation",
-        icon = bsicons::bs_icon("funnel"),
-        card_body(
-          class = "theory",
-          h5("As stated in the report"),
-          p("Any duplicate in the dataset must be removed, as mixed graphical ",
-            "models assume independent observations. Unmatched entries were ",
-            "treated as missing. Covariate headings were standardised so the ",
-            "information is easier to work with."),
-          hr(),
-          h5("What the pipeline actually does"),
-          p(class = "eqnote",
-            "The cleaning scripts carry out several further steps that affect the ",
-            "results and belong in the written methods:"),
-          tags$ul(
-            tags$li("171 raw rows reduced to 164 households: seven duplicate ",
-                    "Study_codes collapsed to their most complete record."),
-            tags$li("Two households roughly 62 km from the rest of the sample were ",
-                    "excluded, leaving ", tags$b("162"), " for analysis."),
-            tags$li("Missing cells filled by median (numeric) or mode ",
-                    "(categorical), because mgm() cannot accept NA at all."),
-            tags$li("Free-text laboratory results normalised; an ESBL entry naming ",
-                    "no organism is treated as missing rather than guessed."),
-            tags$li("Two survey versions for water supply and meat consumption ",
-                    "coalesced into single variables."),
-            tags$li("Education, work status and income collapsed to ordered or ",
-                    "nominal categories with the level counts shown in the ",
-                    "Variable Dictionary.")
-          ),
-          div(
-            class = "alert note-warn",
-            tags$b("Worth reporting. "),
-            "Imputation is required by mgm() but is not neutral for a spatial ",
-            "statistic. Listwise deletion instead costs 22 households and rebuilds ",
-            "the neighbour graph for every variable, which weakens three of the ",
-            "six significant covariates. The robust results are refuse collection ",
-            "and formal dwelling."
-          )
-        )
       )
     )
   ),
@@ -1031,7 +1466,7 @@ ui <- page_navbar(
   nav_panel(
     "Spatial Autocorrelation",
     icon = bsicons::bs_icon("bullseye"),
-    sec_head("Section 3  |  Research aim 3",
+    sec_head("Section 3  |  Research aim 2",
              "Spatial Autocorrelation",
              paste("Which covariates cluster in space, and where. Moran's I and",
                    "Geary's C globally, local indicators site by site, and the",
@@ -1115,6 +1550,136 @@ ui <- page_navbar(
 
       navset_card_tab(
         nav_panel(
+          "Guide",
+          icon = bsicons::bs_icon("compass"),
+          card_body(
+            class = "theory guide",
+            guide_intro(
+              h5("What the controls in this section do"),
+              p(class = "eqnote",
+                tags$b("Research aim 2. "),
+                "Use spatial autocorrelation on these covariates to investigate which ",
+                "factors are spatially significant within KwaZulu-Natal."),
+              p("Moran's I, Geary's C and the LISA are lattice methods, but the 162 ",
+                "households are point-referenced, so a neighbourhood has to be imposed ",
+                "on them before any of these statistics can be computed (Methodology, ",
+                "Spatial Data & Dependence). Most of the sidebar controls change that ",
+                "neighbourhood, and therefore the weights \\(w_{ij}\\) of equation (1), ",
+                "which enter equations (2) to (4). The principle behind every weighting ",
+                "choice is Tobler's first ",
+                "law: near things are more related than distant things (Tobler, 1970).")
+            ),
+            layout_columns(
+              col_widths = c(6, 6), fill = FALSE,
+              div(
+                guide_group("Spatial weights (sidebar)",
+                  guide_row("Neighbourhood definition", "Which households count as neighbours",
+                    tagList(
+                      tags$b("k nearest neighbours"), " links each household to its k closest ",
+                      "households, so every household has neighbours. ",
+                      tags$b("Distance band"), " links every pair closer than the band, so dense ",
+                      "areas get many neighbours and remote households may get none. ",
+                      tags$b("Inverse distance"), " uses the same band but weights each neighbour ",
+                      "by its distance, so closer households count for more. ",
+                      tags$b("Matrix built in 01b"), " uses the 8-nearest-neighbour matrix from ",
+                      "the cleaning pipeline, made symmetric and row-standardised; for Geary's C, ",
+                      "the LISA and Gi* the app uses the equivalent symmetric 8-nearest-neighbour list."),
+                    "Tobler (1970) for the principle that nearer households should carry more weight. The four options themselves are app behaviour."),
+                  guide_row("k (neighbours)", "How many neighbours each household gets",
+                    tagList(
+                      "Only with k nearest neighbours. Under row standardisation each neighbour ",
+                      "carries weight 1/k, so a larger k averages each comparison over a wider area ",
+                      "and a smaller k keeps it local.")),
+                  guide_row("Band (metres)", "How far away a neighbour can be",
+                    tagList(
+                      "Distance band and inverse distance only. Households closer than this are ",
+                      "neighbours. A small band can leave some households with no neighbours at all; ",
+                      "the Spatial Weights tab reports how many under 'Isolated units'.")),
+                  guide_row("Distance decay exponent", "How fast weight falls with distance",
+                    tagList(
+                      "Inverse distance only. Each neighbour's weight is 1 / distance raised to this ",
+                      "power (distances under 1 m are floored at 1 m, because some households share ",
+                      "coordinates). A larger exponent lets the nearest households dominate; a smaller ",
+                      "one spreads the weight more evenly across the band.")),
+                  guide_row("Standardisation", "How the weights are scaled",
+                    tagList(
+                      tags$b("Row (W)"), " rescales each household's weights to sum to 1, so every ",
+                      "household carries the same total weight and its neighbours are averaged. ",
+                      tags$b("Binary (B)"), " gives every neighbour link a weight of 1, so households ",
+                      "with more neighbours carry more total weight. ",
+                      tags$b("Global (C)"), " gives every link the same weight, scaled so the weights ",
+                      "across the whole study area sum to n. Hidden for the 01b matrix, which is ",
+                      "already row-standardised.")),
+                  guide_row("Include Site / density controls", "Adds the built-in spatial checks",
+                    tagList(
+                      "Adds the site indicators and neighbour density to the global table and to ",
+                      "the LISA covariate list. Both are spatial by construction (a site is a patch ",
+                      "of the map, and density is defined from the coordinates), so they are expected ",
+                      "to cluster. They act as positive controls: if the method could not find ",
+                      "clustering in them, nothing else it reported would be believable."),
+                    "your analysis in spatial_autocorrelation_MGM.Rmd. No article is claimed.")
+                )
+              ),
+              div(
+                guide_group("Inference (sidebar)",
+                  guide_row("Permutation replicates", "How precise the p-values are",
+                    tagList(
+                      "Every p-value comes from reshuffling the values across households many times ",
+                      "and counting how often the reshuffled statistic is as extreme as the observed ",
+                      "one. More replicates give a finer p-value: the smallest two-sided p possible is ",
+                      "2 / (replicates + 1), about 0.002 at 999 and 0.0002 at 9999. For the LISA, each ",
+                      "household's own value is held fixed and only the other n - 1 are reshuffled. ",
+                      "All replicates for the global statistics are computed as a single matrix ",
+                      "product. Gi* uses at most 999."),
+                    "Anselin (1995) for holding each household's own value fixed in the LISA permutation; Amgalan et al. (2022) for evaluating the statistic as one matrix product."),
+                  guide_row("Recompute", "When the global table updates",
+                    tagList(
+                      "The global table updates only when you press Recompute, or tick the ",
+                      "site / density box. The LISA tab and the weights diagnostics respond ",
+                      "straight away. The sensitivity plot always uses its own eight fixed definitions."))
+                ),
+                guide_group("Local Indicators (LISA) tab",
+                  guide_row("Covariate", "Which variable is mapped",
+                    "Chooses which variable is mapped, plotted and tabulated."),
+                  guide_row("Significance", "Which households are highlighted",
+                    tagList(
+                      "Decides which households are coloured on the LISA layer and filled in the ",
+                      "scatterplot. The two p options are unadjusted, one test per household. ",
+                      tags$b("q < 0.05 (BH)"), " applies the Benjamini-Hochberg correction across all ",
+                      "the local tests; in this analysis no household survives it, so the map is ",
+                      "exploratory: it points to candidate neighbourhoods rather than confirming them. ",
+                      "This control does not affect the Gi* or raw-value layers."),
+                    "Anselin (1995), who treats multiple comparisons for local statistics as an open problem. The Benjamini-Hochberg correction has no source in the reference list."),
+                  guide_row("Map layer", "What the map colours show",
+                    tagList(
+                      tags$b("LISA quadrants"), " classify each household by its own value and its ",
+                      "neighbours' average, equation (4): High-High and Low-Low are clusters of similar ",
+                      "values, High-Low and Low-High are households unlike their neighbours. The two ",
+                      "negative quadrants stay on the map rather than being folded into a hotspot summary. ",
+                      tags$b("Getis-Ord Gi*"), " shows hot and cold spots; faded points have p of 0.05 ",
+                      "or more. ", tags$b("Raw values"), " shows the covariate itself, with no test."),
+                    "Anselin (1995) for the LISA; Hu et al. (2020) for keeping the negative quadrants; Mtshawu et al. (2023), who pair Moran's I with Gi* maps.")
+                ),
+                guide_refs(
+                  guide_ref("Amgalan, A., Mujica-Parodi, L. R. and Skiena, S. S. (2022). Fast spatial ",
+                            "autocorrelation. ", tags$i("Knowledge and Information Systems", .noWS = "after"), ", 64(4)."),
+                  guide_ref("Anselin, L. (1995). Local indicators of spatial association -- LISA. ",
+                            tags$i("Geographical Analysis", .noWS = "after"), ", 27(2), 93-115."),
+                  guide_ref("Hu, L., Chun, Y. and Griffith, D. A. (2020). Uncovering a positive and ",
+                            "negative spatial autocorrelation mixture pattern: a spatial analysis of ",
+                            "breast cancer incidences in Broward County, Florida, 2000-2010. ",
+                            tags$i("Journal of Geographical Systems", .noWS = "after"), ", 22(3)."),
+                  guide_ref("Mtshawu, B., Bezuidenhout, J. and Kilel, K. K. (2023). Spatial ",
+                            "autocorrelation and hotspot analysis of natural radionuclides to study ",
+                            "sediment transport. ", tags$i("Journal of Environmental Radioactivity", .noWS = "after"), ", 264."),
+                  guide_ref("Tobler, W. R. (1970). A computer movie simulating urban growth in the ",
+                            "Detroit region. ", tags$i("Economic Geography", .noWS = "after"), ", 46(2), 234-240.")
+                )
+              )
+            )
+          )
+        ),
+        nav_panel(
           "Global I and C",
           icon = bsicons::bs_icon("table"),
           card_body(
@@ -1123,7 +1688,7 @@ ui <- page_navbar(
               accordion_panel(
                 "How to read this table",
                 icon = bsicons::bs_icon("info-circle"),
-                p("Moran's I and Geary's C, equations (1) and (2). I > -1/(n-1) means a location tends to be connected to locations with similar values; I < -1/(n-1) means connected locations hold dissimilar values. C < 1 is positive autocorrelation and C > 1 negative, so C moves opposite to I. Both are reported because C is the more sensitive of the two to differences between immediate neighbours while I responds to the broader pattern, so agreement between them is stronger evidence than either alone.")
+                p("Moran's I and Geary's C, equations (2) and (3). I > -1/(n-1) means a location tends to be connected to locations with similar values; I < -1/(n-1) means connected locations hold dissimilar values. C < 1 is positive autocorrelation and C > 1 negative, so C moves opposite to I. Both are reported because C is the more sensitive of the two to differences between immediate neighbours while I responds to the broader pattern, so agreement between them is stronger evidence than either alone.")
               )
             ),
             layout_columns(
@@ -1153,12 +1718,22 @@ ui <- page_navbar(
                                        "Getis-Ord Gi*"  = "gstar",
                                        "Raw values"     = "raw"))
             ),
+            div(class = "sp-basemap",
+                selectInput("sp_lbase", "Basemap (no API key required):",
+                            width = "320px",
+                            choices = c("Dark canvas (Esri)"        = "esridark",
+                                        "Dark (OpenStreetMap)"      = "osmdark",
+                                        "Light grey (Esri)"         = "grey",
+                                        "Street (OpenStreetMap)"    = "osm",
+                                        "Terrain (OpenTopoMap)"     = "topo",
+                                        "Satellite (Esri)"          = "image"),
+                            selected = "esridark")),
             leafletOutput("sp_lmap", height = "460px"),
             layout_columns(
               col_widths = c(7, 5),
               card(
                 class = "mgm-card",
-                card_body(plotOutput("sp_lscatter", height = "400px"))
+                card_body(plotOutput("sp_lscatter", height = "440px"))
               ),
               card_body(
                 h6("Quadrant counts"),
@@ -1183,41 +1758,6 @@ ui <- page_navbar(
                 )
               )
             )
-          )
-        ),
-        nav_panel(
-          "Between Covariates",
-          icon = bsicons::bs_icon("grid-3x3"),
-          card_body(
-            div(class = "alert note-warn", style = "font-size:0.86rem; margin-bottom:14px;",
-                bsicons::bs_icon("exclamation-triangle-fill"), " ",
-                tags$b("Supplementary. "),
-                "Moran's I, Geary's C and the LISA are all univariate: each asks whether one covariate clusters. Lee's L is the bivariate extension, asking whether two covariates cluster in the same places. It is not one of equations (1) to (3), so nothing here should be reported unless a corresponding subsection is added to the methodology first."),
-            layout_columns(
-              col_widths = c(4, 4, 4),
-              radioButtons("sp_lsrc", "Matrix shown:",
-                           choices = c("Stored (19,999 permutations)" = "stored",
-                                       "Recompute at current settings" = "live"),
-                           selected = "stored"),
-              checkboxInput("sp_stipple", "Mark q < 0.05 (BH)", TRUE),
-              checkboxInput("sp_clust", "Cluster the ordering", TRUE)
-            ),
-            layout_columns(
-              col_widths = c(7, 5),
-              card(
-                class = "mgm-card",
-                card_body(plotOutput("sp_heat", height = "700px", click = "sp_heat_click"))
-              ),
-              card(
-                class = "mgm-card",
-                card_body(
-                  h6(textOutput("sp_pairname")),
-                  plotOutput("sp_pairmap",  height = "300px"),
-                  plotOutput("sp_pairnull", height = "300px")
-                )
-              )
-            ),
-            DTOutput("sp_leetab")
           )
         ),
         nav_panel(
@@ -1264,7 +1804,7 @@ ui <- page_navbar(
   nav_panel(
     "MGM Explorer",
     icon = bsicons::bs_icon("diagram-3-fill"),
-    sec_head("Section 4  |  Research aims 1 and 2",
+    sec_head("Section 4  |  Research aim 1",
              "Mixed Graphical Model Explorer",
              paste("Conditional dependencies between covariates of different",
                    "measurement types. Every control in the sidebar refits the",
@@ -1318,7 +1858,8 @@ ui <- page_navbar(
             selectInput("mgm_focus", "Highlight neighbourhood of:", choices = c("(none)")),
             selectInput("mgm_layout", "Layout:", choices = c("spring", "circle"),
                         selected = "spring"),
-            checkboxInput("mgm_rings", "Show predictability rings", TRUE)
+            checkboxInput("mgm_rings", "Show predictability rings", TRUE),
+            checkboxInput("mgm_nosite", "Hide site-to-site edges", TRUE)
           )
         )
       ),
@@ -1348,6 +1889,146 @@ ui <- page_navbar(
       uiOutput("mgm_explorer_status"),
 
       navset_card_tab(
+        nav_panel(
+          "Guide",
+          icon = bsicons::bs_icon("compass"),
+          card_body(
+            class = "theory guide",
+            guide_intro(
+              h5("What the controls in this section do"),
+              p(class = "eqnote",
+                tags$b("Research aim 1. "),
+                "Investigate the significance of demographic factors through the use of ",
+                "mixed graphical models, and then connect those factors to both physical ",
+                "location and AMR markers. Physical location enters the model as the seven ",
+                "fieldwork site nodes and neighbour density; the AMR markers are the three ",
+                "carriage nodes."),
+              p("The model is estimated as one penalised regression per variable, and those ",
+                "regressions are combined into a single graph (Methodology, Algorithm 1; ",
+                "Haslbeck and Waldorp, 2020). An edge means two variables stay dependent after ",
+                "conditioning on every other variable in the model. ",
+                tags$b("Variables"), " and ", tags$b("Estimation"), " change the model itself and ",
+                "take effect only when you press Fit Model; ", tags$b("Display"), " changes only ",
+                "the drawing and applies straight away.")
+            ),
+            layout_columns(
+              col_widths = c(6, 6), fill = FALSE,
+              div(
+                guide_group("Variables (sidebar)",
+                  guide_row("Core set / All variables / Pick manually", "Which variables enter the model",
+                    tagList(
+                      "Because every edge is conditional on all the other variables, adding or ",
+                      "removing variables can make an existing edge appear or disappear: it changes ",
+                      "what each pair is conditioned on. ", tags$b("Core set"), " is a smaller ",
+                      "selection, so fewer parameters are estimated from the same 162 households. ",
+                      tags$b("All variables"), " is the full registry. ", tags$b("Pick manually"),
+                      " starts from whole domains; 'Fine-tune nodes' adds individual variables on top ",
+                      "of those domains but does not remove any. At least four variables are needed."),
+                    "Haslbeck and Waldorp (2020) for edges as conditional dependence. The contents of the core set are a choice made in your pipeline."),
+                  guide_row("Site nodes", "How to read the seven fieldwork sites",
+                    tagList(
+                      "Space enters the model as ", tags$b("seven binary nodes"), ", one per ",
+                      "fieldwork code: Site ARUE, ARUF, ARUL, ARUO, ARUS, ARUT and ARUU. Every site ",
+                      "is a node in its own right. None is held out as a reference, so no edge is a ",
+                      "contrast of one site against another, and because binary nodes are coded 0/1 ",
+                      "with binarySign = TRUE each carries its own ", tags$b("sign"), " -- green for ",
+                      "positive, red for negative. An edge from Site ARUU to a covariate says that ",
+                      "covariate is more (or less) common in ARUU than elsewhere, conditional on ",
+                      "everything else in the model."),
+                    "Haslbeck and Waldorp (2020) for the 0/1 coding and edge signs. The choice of one node per site is a modelling decision in your pipeline."),
+                  guide_row("Hide site-to-site edges", "Why that box is ticked",
+                    tagList(
+                      "Every household belongs to exactly one site, so the seven indicators sum to 1 ",
+                      "in every row. Each site node's own regression is therefore determined exactly ",
+                      "by the other six, and the lasso returns a dense clique of strong edges among ",
+                      "them. That clique is a property of the coding, not of the settlements, and ",
+                      "left in it crowds out the edges this encoding exists to show. It is zeroed on ",
+                      "display by default; untick the box to see it. ",
+                      tags$b("Site-to-covariate edges are never touched by this control."),
+                      " One further consequence to carry into the write-up: inside a covariate's own ",
+                      "regression the seven dummies plus the intercept are rank-deficient, so which ",
+                      "individual site carries an effect can move between bootstrap samples even ",
+                      "when the effect itself is stable. Check anything you intend to report against ",
+                      "the Stability tab, and against a refit with one categorical Site node ",
+                      "(SITE_ENCODING <- \"categorical\" in 01b), which is identified."),
+                    "The collinearity of a full dummy set is standard; the display suppression is app behaviour."),
+                  guide_row("ARUF", "A level with three households",
+                    tagList(
+                      "ARUF contains three households. Its parameters are estimated from those three ",
+                      "rows, and as a positive control its Moran's I is 0.25 against 0.71 to 0.91 for ",
+                      "every other site. Treat any edge that turns on ARUF as hypothesis-generating ",
+                      "rather than as a result."))
+                ),
+                guide_group("Estimation (sidebar)",
+                  guide_row("Interaction order (k)", "Pairs only, or three-way too",
+                    tagList(
+                      tags$b("Pairwise (k = 2)"), " estimates edges between pairs of variables. ",
+                      tags$b("Include 3-way (k = 3)"), " also estimates interactions among three ",
+                      "variables at once, which means many more parameters and a longer fit. k is the ",
+                      "maximum clique size, and it defines the design matrix in step 1 of Algorithm 1. ",
+                      "The network and edge list show the pairwise part of a k = 3 fit, and Interaction ",
+                      "Detail cannot display one."),
+                    "Haslbeck and Waldorp (2020), Algorithm 1."),
+                  guide_row("Select lambda by", "How the penalty is chosen",
+                    tagList(
+                      "Lambda is the penalty. A larger lambda shrinks more parameters to exactly zero and ",
+                      "gives a sparser graph. ", tags$b("EBIC"), " keeps the lambda that minimises ",
+                      "equation (10); this is the method used in the report. ",
+                      tags$b("Cross-validation"), " instead picks lambda by predictive performance across ",
+                      "10 folds. Because ARUF has only 3 households, the app redraws the folds (up to 10 ",
+                      "times) if a fold leaves too few of them to fit."),
+                    "Haslbeck and Waldorp (2020), Algorithm 1 step 2, for the role of lambda; Foygel and Drton (2010) for the EBIC. Cross-validation has no source in the reference list."),
+                  guide_row("EBIC gamma", "How sparse the graph is",
+                    tagList(
+                      "Only with EBIC. Gamma trades sensitivity against precision: larger values penalise ",
+                      "dense graphs more heavily and return fewer edges, and gamma = 0 is the ordinary BIC."),
+                    "Foygel and Drton (2010)."),
+                  guide_row("Combine neighbourhoods with", "When an edge is kept",
+                    tagList(
+                      "Each variable's regression chooses its own neighbours, so variable v can select r ",
+                      "while r does not select v. ", tags$b("AND"), " keeps an edge only if both ",
+                      "regressions select it; it is the conservative rule and the one used in the report. ",
+                      tags$b("OR"), " keeps an edge if either regression selects it, so it returns more edges."),
+                    "Haslbeck and Waldorp (2020), Algorithm 1 step 5."),
+                  guide_row("Apply beta-min threshold (tau)", "Removes very small edges",
+                    tagList(
+                      "When ticked, estimates smaller than the threshold tau are set to zero before the ",
+                      "edges are combined, which removes very small edges. When unticked, every non-zero ",
+                      "estimate left by the penalty is kept, so more weak edges can appear."),
+                    "Haslbeck and Waldorp (2020), Algorithm 1 step 3. The exact threshold rule mgm applies is not described in the reference list."),
+                  guide_row("Fit Model", "When changes take effect",
+                    "Nothing under Variables or Estimation takes effect until this is pressed.")
+                )
+              ),
+              div(
+                guide_group("Display (sidebar)",
+                  guide_row("Hide edges weaker than", "Hides weak edges from view",
+                    tagList(
+                      "Hides edges below the chosen weight in the network and in the Edges table. The ",
+                      "model is not refitted, so hidden edges are still part of the estimated graph.")),
+                  guide_row("Highlight neighbourhood of", "Focus on one node's edges",
+                    "Shows only the edges attached to the chosen node. The model is not refitted."),
+                  guide_row("Layout", "Where the nodes are drawn",
+                    "Changes only where the nodes are drawn. Node positions are not estimates."),
+                  guide_row("Show predictability rings", "How well each node is explained",
+                    tagList(
+                      "Draws a ring around each node showing how much of that variable its neighbours in ",
+                      "the network account for: R-squared for continuous and count variables, normalised ",
+                      "accuracy for categorical ones (see the Predictability tab)."),
+                    "none in the reference list. This row describes the app's calculation.")
+                ),
+                guide_refs(
+                  guide_ref("Foygel, R. and Drton, M. (2010). Extended Bayesian information criteria for ",
+                            "Gaussian graphical models. ", tags$i("Advances in Neural Information ",
+                            "Processing Systems", .noWS = "after"), ", 23, 604-612."),
+                  guide_ref("Haslbeck, J. M. B. and Waldorp, L. J. (2020). mgm: Estimating time-varying ",
+                            "mixed graphical models in high-dimensional data. ",
+                            tags$i("Journal of Statistical Software", .noWS = "after"), ", 93(8), 1-46.")
+                )
+              )
+            )
+          )
+        ),
         nav_panel(
           "Network",
           icon = bsicons::bs_icon("bezier2"),
@@ -1437,38 +2118,10 @@ ui <- page_navbar(
           )
         ),
         nav_panel(
-          "Map",
-          icon = bsicons::bs_icon("pin-map"),
-          card_body(
-            accordion(
-              open = FALSE,
-              accordion_panel(
-                "What this tab shows",
-                icon = bsicons::bs_icon("info-circle"),
-                p("Where each variable in the fitted model actually sits on the ground. The MGM itself has no notion of location, so this is the bridge between the network and the Spatial Autocorrelation section."),
-                p("The neighbour-average toggle replaces each household by the mean of its neighbours. Smoothing that way makes clustering visible that individual points can hide."),
-                p("Two Moran statistics are printed. The raw one asks whether the variable clusters at all. The residual one asks whether it still clusters after the network has explained what it can: if the raw value is high and the residual is near zero, the covariates in the model already account for the spatial pattern.")
-              )
-            ),
-            
-            layout_columns(
-              col_widths = c(5, 4, 3),
-              selectInput("mgm_mapvar", "Colour households by:", choices = NULL),
-              checkboxInput("mgm_mapsize", "Size by local density", TRUE),
-              checkboxInput("mgm_maplag", "Show neighbour average instead", FALSE)
-            ),
-            card(
-              class = "mgm-card",
-              card_body(plotOutput("mgm_map", height = "560px"))
-            ),
-            verbatimTextOutput("mgm_moran"),
-            helpText("Moran's I is the correlation between a household's value and the average of its k nearest neighbours. Positive means nearby households resemble each other; near zero means location carries no information about this variable. The p-value comes from 499 random permutations of the values across locations.")
-          )
-        ),
-        nav_panel(
-          "Variable Dictionary",
+          "Node Dictionary",
           icon = bsicons::bs_icon("journal-text"),
           card_body(
+            class = "theory",
             accordion(
               open = FALSE,
               accordion_panel(
@@ -1479,8 +2132,29 @@ ui <- page_navbar(
                 p("It also decides which spatial statistic a variable is eligible for. A c node with more than two levels has no meaningful numeric ordering, so Moran's I on its integer code would be an artefact of arbitrary numbering; those are expanded into level indicators before the spatial section touches them.")
               )
             ),
-            
-            DTOutput("mgm_dict")
+            h5("Every node, and why it is in the model"),
+            p("Putting a variable in the model commits you to three separate ",
+              "claims, and a methodology section that answers only the first is ",
+              "the one an examiner pushes on. Each entry below answers all three: ",
+              tags$b("why it is here"), " (what the survey asked and what the ",
+              "recode made of it), ", tags$b("why this distribution"), ", and ",
+              tags$b("how to read a result"), " that involves it."),
+            p(class = "eqnote",
+              "Type, level, domain and the summary statistics are read live from ",
+              "the loaded object, so this section always describes the model you ",
+              "actually have in front of you rather than a remembered one. Only ",
+              "the written justification is stored."),
+            uiOutput("nd_status"),
+            selectInput("nd_pick", "Node:",
+                        choices = MGM_REG$var %|z|% character(0),
+                        selected = (MGM_REG$var %|z|% "")[1], width = "320px"),
+            uiOutput("nd_detail"),
+            hr(),
+            h5("All nodes at a glance"),
+            p("Sortable and searchable. The summary column is computed from the ",
+              "cleaned frame after imputation and after the two geocoding outliers ",
+              "were dropped."),
+            DTOutput("nd_table")
           )
         )
       )
@@ -1498,7 +2172,7 @@ ui <- page_navbar(
     layout_column_wrap(
       width = 1,
       card(
-        card_header("Synthesis of Findings"),
+        glow_header("Synthesis of Findings"),
         card_body(
           p("The integrated surveillance framework demonstrates significant interaction between environmental sanitation infrastructure, socio-demographic factors, study sites, and pathogen colonization across all longitudinal sampling months."),
           tags$ul(
@@ -1680,10 +2354,36 @@ server <- function(input, output, session) {
       lab  <- sprintf("<b>Site: </b>%s<br><b>Quadrant: </b>%s<br><b>I_i: </b>%.2f<br><b>p: </b>%.3f<br><b>q: </b>%.3f",
                       dd$site, li$quadrant, li$Ii, li$p, li$q_BH)
     }
-    m <- leaflet(dd) %>%
-      addProviderTiles(providers$CartoDB.DarkMatter) %>%
+    ## BASEMAP. CartoDB.DarkMatter was withdrawn from keyless use in August
+    ## 2026: the tiles still load, but they arrive stamped
+    ## "API KEY REQUIRED / carto.com/basemaps/apikey". Every option below
+    ## serves tiles without a key, so the watermark cannot come back. Two of
+    ## them are dark, to keep the map in the same register as the rest of the
+    ## dashboard: Esri's dark canvas, and plain OpenStreetMap inverted in CSS
+    ## (class swam-dark-tiles). The CSS filter is applied to the tile pane
+    ## alone, so the markers keep the LISA colours exactly as specified.
+    ESRI_ATTR <- "Tiles &copy; Esri"
+    m <- leaflet(dd)
+    m <- switch(input$sp_lbase %|z|% "esridark",
+      esridark = addTiles(m, urlTemplate = paste0(
+                   "https://server.arcgisonline.com/ArcGIS/rest/services/",
+                   "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
+                   attribution = ESRI_ATTR,
+                   options = tileOptions(maxZoom = 16)),
+      osmdark  = addTiles(m, options = tileOptions(className = "swam-dark-tiles")),
+      grey     = addProviderTiles(m, providers$Esri.WorldGrayCanvas),
+      osm      = addTiles(m),
+      topo     = addProviderTiles(m, providers$OpenTopoMap),
+      image    = addProviderTiles(m, providers$Esri.WorldImagery),
+      addTiles(m, options = tileOptions(className = "swam-dark-tiles")))
+    dark_base  <- (input$sp_lbase %|z|% "esridark") %in%
+                    c("esridark", "osmdark", "image")
+    ## rim contrasts with the BASEMAP, not with the fill: on 162 points over
+    ## seven clustered sites the rim is what separates overlapping markers
+    stroke_col <- if (dark_base) "#EAF6FA" else "#0B2027"
+    m <- m %>%
       addCircleMarkers(lng = ~lon, lat = ~lat, radius = 6, stroke = TRUE,
-                       weight = 1, color = "#041F29", fillColor = cols,
+                       weight = 1.2, color = stroke_col, fillColor = cols,
                        fillOpacity = opac, popup = lab)
     if (identical(input$sp_llayer, "lisa")) {
       m <- m %>% addLegend("bottomright", colors = c(unname(PAL_LISA), PAL_NS),
@@ -1693,22 +2393,89 @@ server <- function(input, output, session) {
     m
   })
 
+  ## MORAN SCATTERPLOT.
+  ## Three things made the earlier version hard to read, and each is handled
+  ## explicitly here. (1) Most covariates are counts or binaries, so Z(s_i) -
+  ## Zbar takes a handful of distinct values and the points stack exactly on
+  ## top of one another; a small deterministic jitter on x separates them
+  ## while leaving y, which is continuous, untouched. (2) Significant and
+  ## non-significant sites were nearly the same mark; now the non-significant
+  ## ones are small and faint and the significant ones are large and solid, so
+  ## the eye lands on the sites that carry the result. (3) The fitted line has
+  ## slope equal to global I, which is often near zero, and it then lies on
+  ## top of the horizontal reference line; the zero axes are therefore dashed
+  ## grey drawn first, the fit is a heavier semi-transparent line drawn over
+  ## them, and the legend names it so the two cannot be confused.
   output$sp_lscatter <- renderPlot({
     req(SP_OK)
-    L <- sp_lisa(); li <- L$li
-    op <- par(mar = c(4, 4, 3, 1)); on.exit(par(op))
-    plot(li$Zc, li$lag_Zc, pch = 21, cex = 1.2,
-         bg  = ifelse(li$sig, unname(PAL_LISA[li$quadrant]), "white"),
-         col = unname(PAL_LISA[li$quadrant]),
-         xlab = expression(Z(s[i]) - bar(Z)),
-         ylab = expression(sum(w[ij] * (Z(s[j]) - bar(Z)), j, )),
-         main = paste("Moran scatterplot:", input$sp_lvar))
-    abline(h = 0, v = 0, col = "grey75")
-    abline(a = 0, b = L$I, col = "#D6455B", lwd = 2)
-    legend("topleft", bty = "n", cex = 0.8, legend = names(PAL_LISA), pch = 21,
-           col = unname(PAL_LISA), pt.bg = unname(PAL_LISA))
-    mtext(sprintf("fitted slope = global I = %.3f", L$I), side = 3, line = -1.3,
-          adj = 0.98, cex = 0.85, col = "#D6455B")
+    L <- sp_lisa(); li <- L$li; I <- L$I
+    v <- input$sp_lvar
+    sig_lab <- switch(input$sp_lsig %|z|% "p05",
+                      q05 = "q < 0.05, BH", p01 = "p < 0.01", "p < 0.05")
+
+    x0 <- li$Zc; y <- li$lag_Zc; n <- length(x0)
+    ux <- sort(unique(x0)); disc <- length(ux) <= 12 && length(ux) > 1
+    x  <- x0
+    if (disc) {                       # seeded, so the plot does not twitch
+      set.seed(11)                    # between redraws of the same variable
+      x <- x0 + stats::runif(n, -0.19, 0.19) * min(diff(ux))
+    }
+    q <- li$quadrant; sg <- li$sig
+
+    op <- par(mar = c(7.6, 4.8, 3.8, 1.6), xpd = FALSE); on.exit(par(op))
+    xr <- range(x); yr <- range(y)
+    xr <- xr + c(-1, 1) * 0.06 * diff(xr)
+    yr <- yr + c(-1, 1) * 0.08 * diff(yr)
+    plot(NA, xlim = xr, ylim = yr, xlab = "", ylab = "", las = 1,
+         cex.axis = 0.95, bty = "n")
+    u <- par("usr")
+
+    ## faint quadrant tints, so a quadrant can be read without the legend
+    rect(0, 0, u[2], u[4], col = adjustcolor(PAL_LISA["High-High"], 0.055), border = NA)
+    rect(u[1], u[3], 0, 0, col = adjustcolor(PAL_LISA["Low-Low"],   0.055), border = NA)
+    rect(0, u[3], u[2], 0, col = adjustcolor(PAL_LISA["High-Low"],  0.055), border = NA)
+    rect(u[1], 0, 0, u[4], col = adjustcolor(PAL_LISA["Low-High"],  0.055), border = NA)
+
+    pad <- c(diff(u[1:2]), diff(u[3:4])) * 0.015
+    text(u[2] - pad[1], u[4] - pad[2], "High-High", adj = c(1, 1), cex = 0.78,
+         font = 2, col = adjustcolor(PAL_LISA["High-High"], 0.85))
+    text(u[1] + pad[1], u[3] + pad[2], "Low-Low",   adj = c(0, 0), cex = 0.78,
+         font = 2, col = adjustcolor("#0E9BB8", 0.90))
+    text(u[2] - pad[1], u[3] + pad[2], "High-Low",  adj = c(1, 0), cex = 0.78,
+         font = 2, col = adjustcolor("#D98B55", 0.90))
+    text(u[1] + pad[1], u[4] - pad[2], "Low-High",  adj = c(0, 1), cex = 0.78,
+         font = 2, col = adjustcolor("#5FA9BA", 0.95))
+
+    abline(h = 0, v = 0, col = "grey50", lty = 2, lwd = 1.2)
+    abline(a = 0, b = I, col = adjustcolor("#243B47", 0.72), lwd = 3)
+
+    points(x[!sg], y[!sg], pch = 21, cex = 0.9, lwd = 0.6,
+           bg = adjustcolor(PAL_NS, 0.20), col = adjustcolor(PAL_NS, 0.55))
+    points(x[sg],  y[sg],  pch = 21, cex = 1.7, lwd = 1.1,
+           bg = unname(PAL_LISA[q[sg]]), col = "#0B2027")
+
+    title(main = sprintf("Moran scatterplot: %s", v), cex.main = 1.15, line = 2.3)
+    mtext(sprintf("n = %d sites  |  %d significant (%s)  |  fitted slope = global I = %.3f%s",
+                  n, sum(sg), sig_lab, I,
+                  if (disc) "  |  x jittered for display" else ""),
+          side = 3, line = 0.7, cex = 0.82, col = "#4A5B63")
+    mtext("value at site i, centred", side = 1, line = 2.6, cex = 0.95)
+    mtext("mean of the k neighbours, centred (spatial lag)", side = 2,
+          line = 3.1, cex = 0.95)
+
+    ## legend sits in the bottom margin, positioned in LINE units so that it
+    ## clears the axis title at every panel size (a data-range offset does not)
+    legend(x = mean(u[1:2]), y = grconvertY(3.25, "lines", "user"),
+           xjust = 0.5, yjust = 1, xpd = NA, bty = "n", ncol = 3,
+           cex = 0.82, y.intersp = 1.15,
+           legend = c(names(PAL_LISA), "not significant", "fitted slope = I"),
+           pch    = c(rep(21, 5), NA),
+           lty    = c(rep(NA, 5), 1), lwd = c(rep(NA, 5), 3), seg.len = 1.6,
+           pt.cex = c(1.5, 1.5, 1.5, 1.5, 0.9, NA),
+           col    = c(rep("#0B2027", 4), adjustcolor(PAL_NS, 0.55),
+                      adjustcolor("#243B47", 0.72)),
+           pt.bg  = c(unname(PAL_LISA), adjustcolor(PAL_NS, 0.20), NA),
+           text.col = "#22303A", x.intersp = 0.8)
   })
 
   output$sp_ltab <- renderTable({
@@ -1717,123 +2484,6 @@ server <- function(input, output, session) {
     tb <- as.data.frame.matrix(
       table(li$quadrant, ifelse(li$sig, "significant", "not significant")))
     cbind(Quadrant = rownames(tb), tb)
-  })
-
-  ## ---- Lee's L between covariates (supplementary) ----
-  sp_leemat <- eventReactive(list(input$sp_go, input$sp_lsrc),
-                             ignoreNULL = FALSE, {
-    if (!SP_OK) return(NULL)
-    if (identical(input$sp_lsrc, "stored")) return(SPB$lee)
-    withProgress(message = "Lee's L across all covariate pairs", value = 0.5, {
-      lee_matrix_fast(SPB$X, SPB$coords, SPB$cov_vars,
-                      wcfg = if (is.null(sp_wcfg()))
-                               list(type = "knn", k = SPB$k, style = "W")
-                             else sp_wcfg(),
-                      nsim = sp_nsim(), block = 1000, seed = 1)
-    })
-  })
-
-  sp_heat_order <- reactive({
-    LM <- sp_leemat(); req(LM)
-    if (!isTRUE(input$sp_clust)) return(seq_len(ncol(LM$L)))
-    stats::hclust(stats::as.dist(1 - LM$L / max(abs(LM$L), na.rm = TRUE)))$order
-  })
-
-  output$sp_heat <- renderPlot({
-    LM <- sp_leemat(); req(LM)
-    ord <- sp_heat_order()
-    Lo <- LM$L[ord, ord]; Po <- LM$P[ord, ord]
-    lim <- max(abs(LM$L), na.rm = TRUE)
-    op <- par(mar = c(10, 10, 2, 1)); on.exit(par(op))
-    image(seq_len(ncol(Lo)), seq_len(nrow(Lo)), t(Lo),
-          col = PAL_DIV(64), breaks = seq(-lim, lim, length.out = 65),
-          axes = FALSE, xlab = "", ylab = "")
-    axis(1, seq_len(ncol(Lo)), colnames(Lo), las = 2, cex.axis = 0.56, tick = FALSE)
-    axis(2, seq_len(nrow(Lo)), rownames(Lo), las = 2, cex.axis = 0.56, tick = FALSE)
-    if (isTRUE(input$sp_stipple)) {
-      qm <- bh_matrix(Po)
-      ij <- which(!is.na(qm) & qm < 0.05, arr.ind = TRUE)
-      if (nrow(ij)) points(ij[, 2], ij[, 1], pch = 20, cex = 0.5)
-    }
-    box(col = "grey60")
-    title("Lee's L between covariates", cex.main = 1)
-    mtext("click a cell for the pair detail", side = 3, line = -0.6,
-          adj = 1, cex = 0.75, col = "grey40")
-  })
-
-  sp_sel <- reactiveVal(NULL)
-  observeEvent(input$sp_heat_click, {
-    LM <- sp_leemat(); req(LM)
-    nm <- colnames(LM$L)[sp_heat_order()]
-    i <- round(input$sp_heat_click$y); j <- round(input$sp_heat_click$x)
-    if (i >= 1 && i <= length(nm) && j >= 1 && j <= length(nm) && i != j)
-      sp_sel(c(nm[i], nm[j]))
-  })
-
-  sp_pair <- reactive({
-    LM <- sp_leemat(); req(LM)
-    s <- sp_sel()
-    if (is.null(s)) {
-      ut <- upper.tri(LM$L); k <- which.min(replace(LM$P, !ut, NA))
-      s  <- c(rownames(LM$L)[row(LM$L)[k]], colnames(LM$L)[col(LM$L)[k]])
-    }
-    W <- sp_Wmat()
-    list(v = s, W = W,
-         local = local_lee(SPB$X[[s[1]]], SPB$X[[s[2]]], sp_lw()),
-         perm  = perm_lee_W(SPB$X[[s[1]]], SPB$X[[s[2]]], W,
-                            nsim = sp_nsim(), seed = 5, joint = TRUE),
-         r = stats::cor(SPB$X[[s[1]]], SPB$X[[s[2]]]))
-  })
-
-  output$sp_pairname <- renderText({
-    p <- sp_pair(); sprintf("%s  vs  %s", p$v[1], p$v[2])
-  })
-
-  output$sp_pairmap <- renderPlot({
-    p <- sp_pair(); ll <- p$local
-    lim <- max(abs(ll), na.rm = TRUE)
-    cols <- PAL_DIV(64)[cut(ll, seq(-lim, lim, length.out = 65),
-                            include.lowest = TRUE)]
-    op <- par(mar = c(4, 4, 2, 1)); on.exit(par(op))
-    plot(SPB$lonlat[, 1], SPB$lonlat[, 2],
-         asp = 1 / cos(mean(SPB$lonlat[, 2]) * pi / 180),
-         pch = 21, cex = 1.3, bg = cols, col = "grey35",
-         xlab = "Longitude", ylab = "Latitude")
-    title(sprintf("Local Lee's L  (global L = %.3f)", p$perm$statistic),
-          cex.main = 1)
-  })
-
-  output$sp_pairnull <- renderPlot({
-    p <- sp_pair(); n <- nrow(SPB$X)
-    A_ <- sum(p$W^2); Bd <- sum(rowSums(p$W)^2)
-    theory <- p$r * (n * A_ - Bd) / (Bd * (n - 1))
-    op <- par(mar = c(4, 4, 3, 1)); on.exit(par(op))
-    hist(p$perm$sim, breaks = 40, col = "#DCE7EA", border = "white",
-         main = "Joint-permutation null",
-         xlab = "Lee's L", xlim = range(p$perm$sim, p$perm$statistic, theory))
-    abline(v = theory, col = "#1F7A99", lwd = 2, lty = 2)
-    abline(v = p$perm$statistic, col = "#D6455B", lwd = 2)
-    legend("topright", bty = "n", cex = 0.75, lwd = 2, lty = c(1, 2),
-           col = c("#D6455B", "#1F7A99"),
-           legend = c(sprintf("observed L = %.3f", p$perm$statistic),
-                      sprintf("E[L] = r(nA-B)/(B(n-1)) = %.3f", theory)))
-    mtext(sprintf("aspatial r = %+.3f    two-sided p = %.4f",
-                  p$r, p$perm$p_two), side = 3, line = 0.2, adj = 0, cex = 0.8)
-  })
-
-  output$sp_leetab <- renderDT({
-    LM <- sp_leemat(); req(LM)
-    ut <- upper.tri(LM$L)
-    res <- data.frame(a = rownames(LM$L)[row(LM$L)[ut]],
-                      b = colnames(LM$L)[col(LM$L)[ut]],
-                      L = LM$L[ut], p = LM$P[ut])
-    res$q_BH <- stats::p.adjust(res$p, "BH")
-    res <- res[order(res$p, -abs(res$L)), ]
-    tb <- datatable(res, rownames = FALSE,
-                    options = list(pageLength = 10, dom = "tip"),
-                    colnames = c("Covariate", "Covariate", "Lee L", "p", "q (BH)"))
-    tb <- formatRound(tb, "L", 4)
-    formatSignif(tb, c("p", "q_BH"), 3)
   })
 
   ## ---- weights diagnostics ----
@@ -2013,9 +2663,27 @@ server <- function(input, output, session) {
     if (lamSel == "CV")   args$lambdaFolds <- 10
 
     withProgress(message = "Fitting MGM...", value = 0.5, {
-      fit <- tryCatch(do.call(mgm, args), error = function(e)
+      # CV folds are random. ARUF has only 3 households, so about one draw in
+      # four leaves a training fold with 0 or 1 of them and glmnet refuses the
+      # site node's regression. Redrawing the folds when (and only when) that
+      # happens is equivalent to stratifying the folds on the rare category.
+      fit_mgm <- function() {
+        for (attempt in 1:10) {
+          f <- tryCatch(do.call(mgm, args), error = function(e) e)
+          if (!inherits(f, "error")) return(f)
+          if (!(lamSel == "CV" && grepl("1 or 0 observations", conditionMessage(f))))
+            stop(f)
+        }
+        stop(f)
+      }
+      fit <- tryCatch(fit_mgm(), error = function(e)
         validate(need(FALSE, paste0(
           "mgm() failed: ", conditionMessage(e), "\n",
+          if (lamSel == "CV" && grepl("1 or 0 observations", conditionMessage(e)))
+            paste0("  A category with very few households (ARUF has 3) ended up with ",
+                   "0 or 1 of them in a cross-validation training fold on 10 fold ",
+                   "draws in a row. Select lambda by EBIC, or fit a variable set ",
+                   "without that category.\n"),
           "  nodes = ", ncol(X), ",  n = ", nrow(X), ",  k = ", k_ord,
           ",  lambdaSel = ", lamSel, ",  rule = ", rule,
           ",  threshold = ", if (thr) "LW" else "none", "\n",
@@ -2037,10 +2705,78 @@ server <- function(input, output, session) {
          groups = grp, pred = pr)
   }, ignoreNULL = FALSE)   # fit once on start-up with the defaults
 
+  # --- Node Dictionary -----------------------------------------------------
+  output$nd_status <- renderUI({
+    if (MGM_OK) return(NULL)
+    div(class = "alert note-warn",
+        tags$b("No model object loaded. "),
+        "The dictionary reads type, level and the summary statistics from ",
+        "output/AIARMS_mgm_spatial.rds. Run the cleaning sections of the ",
+        "analysis document and reopen the app.")
+  })
+
+  output$nd_detail <- renderUI({
+    req(MGM_OK)
+    v <- input$nd_pick %|z|% MGM_VARS[1]
+    j <- match(v, MGM_VARS); req(!is.na(j))
+    nt <- NODE_NOTES[[v]]
+    qa <- function(k, txt) div(class = "defrow",
+                               div(class = "term", k),
+                               div(class = "desc", HTML(txt)))
+    tagList(
+      chiprow(
+        chip("Node", v, MGM_LABELS[j], tone = "warm"),
+        chip("Distribution", node_type_label(j), paste("Domain:", MGM_REG$group[match(v, MGM_REG$var)])),
+        chip("In this sample", node_summary(v), sprintf("n = %d households", nrow(AIARMS_OBJ$data)))
+      ),
+      if (is.null(nt))
+        div(class = "alert note-warn",
+            tags$b("No written justification for this node yet. "),
+            "It is in the registry and in the model, but nothing here explains ",
+            "why it carries the distribution it does. Add an entry to ",
+            "NODE_NOTES keyed by the variable name.")
+      else
+        tagList(
+          qa("Why it is here",        nt$what),
+          qa("Why this distribution", nt$why),
+          qa("Reading a result",      nt$read),
+          if (!is.null(nt$flag)) div(class = "alert note-warn", HTML(nt$flag))
+        )
+    )
+  })
+
+  output$nd_table <- renderDT({
+    req(MGM_OK)
+    datatable(node_facts(), rownames = FALSE, selection = "none",
+              options = list(pageLength = 15, scrollX = TRUE,
+                             order = list(list(3, "asc"))))
+  })
+
+  # Which of the displayed nodes are site indicators. Resolved by variable
+  # name rather than by label, so it survives a relabelling.
+  mgm_site_idx <- reactive({
+    m <- mgm_model(); req(m)
+    v <- MGM_VARS[match(m$labels, MGM_LABELS)]
+    which(!is.na(v) & grepl("^Site_", v))
+  })
+
   mgm_wadj_display <- reactive({
     m <- mgm_model(); req(m)
     w <- m$fit$pairwise$wadj
     w[abs(w) < (input$mgm_cut %|z|% 0)] <- 0   # display cut-off only, not a refit
+
+    # SITE-TO-SITE EDGES. Under the dummy_full encoding every household is in
+    # exactly one site, so the seven indicators sum to 1 in every row. Each
+    # site node's own nodewise logistic regression is then perfectly separated
+    # by the other six and glmnet returns a dense clique among them. That
+    # clique is a property of the coding, not of the settlements, and it
+    # crowds out the edges the encoding exists to show. Zeroed on display by
+    # default; untick the box to see it. Site-to-COVARIATE edges are never
+    # touched.
+    if (isTRUE(input$mgm_nosite %|z|% TRUE)) {
+      si <- mgm_site_idx()
+      if (length(si) > 1L) w[si, si] <- 0
+    }
     dimnames(w) <- list(m$labels, m$labels)
     w
   })
@@ -2146,72 +2882,14 @@ server <- function(input, output, session) {
     m <- mgm_model()
     i <- match(input$mgm_i1, m$labels); j <- match(input$mgm_i2, m$labels)
     if (is.na(i) || is.na(j) || i == j) return(cat("Choose two different nodes."))
-    showInteraction(m$fit, int = c(i, j))
-  })
-
-  observe({
-    req(MGM_OK)
-    m <- mgm_model()
-    updateSelectInput(session, "mgm_mapvar", choices = m$labels,
-                      selected = if ("ESBL+ months" %in% m$labels) "ESBL+ months"
-                                 else m$labels[1])
-  })
-
-  # Moran's I with a permutation test, kept inline exactly as in
-  # 03_mgm_explorer_app.R so this tab needs nothing from the spatial section.
-  mgm_moran_test <- function(v, W, nperm = 499) {
-    v <- as.numeric(v)
-    if (sd(v) == 0) return(list(I = NA, p = NA))
-    n <- length(v); z <- v - mean(v)
-    Ifun <- function(z) (n / sum(W)) * as.numeric(t(z) %*% W %*% z) /
-                        as.numeric(t(z) %*% z)
-    I_obs <- Ifun(z)
-    I_perm <- replicate(nperm, Ifun(sample(z)))
-    list(I = I_obs, p = (sum(abs(I_perm) >= abs(I_obs)) + 1) / (nperm + 1))
-  }
-
-  mgm_map_values <- reactive({
-    req(MGM_HAS_SPATIAL)
-    m <- mgm_model()
-    j <- match(input$mgm_mapvar, m$labels); req(!is.na(j))
-    v <- m$X[, j]
-    # The neighbour average is the spatial lag: each household replaced by the
-    # mean of its neighbours. Smoothing this way makes clustering visible that
-    # individual points can hide.
-    if (isTRUE(input$mgm_maplag) && !is.null(AIARMS_OBJ$W))
-      v <- as.numeric(AIARMS_OBJ$W %*% v)
-    v
-  })
-
-  output$mgm_map <- renderPlot({
-    req(MGM_HAS_SPATIAL)
-    m  <- mgm_model(); xy <- AIARMS_OBJ$coords; v <- mgm_map_values()
-    pal_v <- colorRampPalette(c("#1F7A99", "#F2F7F8", "#D6455B"))(10)
-    cols  <- pal_v[cut(v, breaks = 10, labels = FALSE)]
-    dj <- grep("^Neighbours within", m$labels)[1]
-    cx <- if (isTRUE(input$mgm_mapsize) && !is.na(dj))
-            0.7 + 1.8 * m$X[, dj] / max(m$X[, dj]) else 1.3
-    op <- par(mar = c(4, 4, 3, 1)); on.exit(par(op))
-    plot(xy[, 1], xy[, 2], asp = 1, pch = 21, bg = cols, col = "grey30", cex = cx,
-         xlab = "Easting (m from centroid)", ylab = "Northing (m from centroid)",
-         main = paste0(input$mgm_mapvar,
-                       if (isTRUE(input$mgm_maplag)) "  (neighbour average)" else ""))
-    legend("topleft", legend = c("low", "", "", "", "high"),
-           pt.bg = pal_v[c(1, 3, 5, 7, 10)], pch = 21, bty = "n", cex = 0.85)
-  })
-
-  output$mgm_moran <- renderPrint({
-    if (!MGM_HAS_SPATIAL) return(cat("Run 01b_add_spatial.R to enable the map."))
-    m <- mgm_model(); j <- match(input$mgm_mapvar, m$labels); req(!is.na(j))
-    r  <- mgm_moran_test(m$X[, j], AIARMS_OBJ$W)
-    rj <- if (m$type[j] %in% c("g", "p"))
-            mgm_moran_test(m$X[, j] - m$pred$predicted[, j], AIARMS_OBJ$W) else NULL
-    cat("Variable:", input$mgm_mapvar, "  (k =", AIARMS_OBJ$K_NN, "neighbours)\n")
-    cat(sprintf("  raw       Moran's I = %+.3f   p = %.3f\n", r$I, r$p))
-    if (!is.null(rj))
-      cat(sprintf("  residual  Moran's I = %+.3f   p = %.3f\n", rj$I, rj$p))
-    cat(sprintf("  expected under no autocorrelation: %+.3f\n",
-                -1 / (nrow(m$X) - 1)))
+    print(showInteraction(m$fit, int = c(i, j)))
+    # A categorical site node is coded 1..m; show which level is which site.
+    site_nm <- AIARMS_OBJ$site_vars %|z|% character(0)
+    v_ij    <- MGM_VARS[match(c(input$mgm_i1, input$mgm_i2), MGM_LABELS)]
+    if (identical(AIARMS_OBJ$site_encoding, "categorical") &&
+        any(v_ij %in% site_nm) && length(AIARMS_OBJ$site_labels))
+      cat("\nSite levels: ", paste(sprintf("%d = %s", seq_along(AIARMS_OBJ$site_labels),
+                                             AIARMS_OBJ$site_labels), collapse = ",  "), "\n")
   })
 
   # -----------------------------------------------------------------------
@@ -2258,13 +2936,6 @@ server <- function(input, output, session) {
   observeEvent(input$jump_spatial, nav_select("main_nav", "Spatial Autocorrelation"))
   observeEvent(input$jump_mgm,     nav_select("main_nav", "MGM Explorer"))
 
-  output$mgm_dict <- renderDT({
-    req(MGM_OK)
-    datatable(MGM_REG[, c("var", "label", "type", "level", "group")],
-              rownames = FALSE,
-              colnames = c("Column", "Label", "mgm type", "Levels", "Domain"),
-              options = list(pageLength = 35, scrollX = TRUE))
-  })
 }
 
 # --- RUN SHINY APPLICATION ---

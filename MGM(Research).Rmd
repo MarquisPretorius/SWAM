@@ -1,17 +1,88 @@
 ---
-title: "MGM"
-author: "Marquis Pretorius"
-date: "2026-08-17"
-output: html_document
+title: "Spatial modelling of wastewater data in epidemiology --- full analysis"
+subtitle: "Cleaning, spatial covariates, the mixed graphical model, and spatial autocorrelation, in one run"
+author: "Marquis Pretorius --- WST795 research report"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+    code_folding: show
+bibliography: references.bib
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, include=FALSE, purl=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 8, fig.height = 5, dpi = 150,
+  ## cache is OFF deliberately. The first three sections write .rds files that
+  ## every later section reads, so a cached chunk that did not re-run would
+  ## leave the document reporting one pipeline while the files on disk came
+  ## from another. The whole document runs in a few minutes; correctness is
+  ## worth more than that here.
+  cache = FALSE
+)
+options(width = 105)
 ```
 
+# How to run this document
 
+Everything from the raw export to the spatial results is here, in the order it
+has to happen. Knit the file and the whole analysis runs; run it chunk by chunk
+and it behaves the same way. The only thing it needs in the working directory
+is `full_AIARMS_df.csv`, plus `references.bib`, `app.R` and `gadm41_ZAF_4.shp`
+if you want the bibliography, the app listing and the provincial map.
 
-```{r Data Cleaning}    
+| Section | Chunk | Writes |
+|---|---|---|
+| 2 | `Data Cleaning` | `output/AIARMS_mgm.rds` |
+| 3 | `Spatial component` | `output/AIARMS_mgm_spatial.rds` |
+| 4 | `Mixed Graphical Models` | the fit, the network, the Moran diagnostics |
+| 5 onwards | spatial autocorrelation | `mgm_spatial_bundle.rds`, `mgm_spatial_core.R` |
+
+The last two are what `app.R` loads, so knitting this document is also how the
+dashboard gets rebuilt.
+
+Expect **under a minute** for the spatial analysis, plus whatever the model fit
+takes. The bivariate sections were removed because Section 2.1 of the report
+defines Moran's I, Geary's C and the local Moran and nothing else --- reporting
+a statistic the methodology never defines is the kind of gap an examiner finds.
+
+The remaining lever is the **bootstrap** in Section 4. `RUN_BOOTSTRAP <- FALSE`
+while you are drafting prose --- 100 refits of the full model is minutes, and it
+re-runs every knit even when nothing about the model has changed. Switch it back
+on for the final build.
+
+## The decisions this document makes
+
+Four switches change the numbers. They sit at the top of their own sections;
+they are collected here so that none of them is made by accident.
+
+| Switch | Section | Default | What it decides |
+|---|---|---|---|
+| `STRICT_MISSING` | 2 | `TRUE` | Whether a blank cell in a Yes/No grid is a "No" or a non-response. Moves `Flooding` and `ManureUse`. |
+| `EDU_STRICT_TERTIARY` | 2 | `FALSE` | Whether a sub-matric certificate counts as tertiary. **Decides whether `Education_3` is a finding.** |
+| `EXPOSURE_UNION` | 2 | `TRUE` | Whether `Months_tested` counts ESBL months only, or months with any readable result. |
+| `SITE_ENCODING` | 3 | `"dummy_full"` | Seven binary site nodes, one per fieldwork code. `"categorical"` is the identified alternative. |
+
+Set the first three to `FALSE` and `SITE_ENCODING` to `"dummy_reference"`, and
+the cleaning reproduces the original pipeline's data matrix exactly; only the
+`w_ii = 0` correction to the weights matrix then differs. Running it both ways
+is the sensitivity analysis the methodology section needs.
+
+---
+
+# Cleaning the raw export {#clean}
+
+`01_clean_AIARMS.R`. Turns the raw household survey and the monthly culture
+results into an object `mgm()` will accept: a fully numeric matrix, no missing
+values, categorical variables coded as consecutive integers, and a registry
+declaring each variable's type and level.
+
+```{r Data Cleaning, purl=FALSE}
 ###############################################################################
 # 01_clean_AIARMS.R
 #
@@ -43,7 +114,11 @@ knitr::opts_chunk$set(echo = TRUE)
 ## ---------------------------------------------------------------------------
 ## 0. Setup
 ## ---------------------------------------------------------------------------
-rm(list = ls())
+## In a combined run the earlier sections have already written their .rds
+## outputs, so nothing here needs a clean slate -- and rm(list = ls()) part way
+## through a knit would delete objects the later sections rely on. Run
+## standalone, it behaves exactly as before.
+if (!isTRUE(getOption("knitr.in.progress"))) rm(list = ls())
 
 pkgs <- c("dplyr", "stringr", "tidyr", "tibble")
 new  <- pkgs[!pkgs %in% rownames(installed.packages())]
@@ -54,12 +129,65 @@ RAW_PATH <- "full_AIARMS_df.csv"   # <-- edit if the file lives elsewhere
 OUT_DIR  <- "output"
 if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR)
 
-## Read with explicit UTF-8 so the R-currency / en-dash characters in the
-## income bands do not turn into mojibake ("R1601 - R3200 (R19201 - R38400)").
+## ---------------------------------------------------------------------------
+## 0a. Cleaning switches  (each one is a decision the write-up has to defend)
+## ---------------------------------------------------------------------------
+## STRICT_MISSING
+##   FALSE reproduces the original behaviour: a blank cell anywhere in a
+##   "select all that apply" grid is read as "not ticked" and becomes 0.
+##   TRUE  restricts that rule to the blocks where it is actually true of the
+##   questionnaire, and treats a blank as MISSING wherever the form also
+##   records an explicit "No". This matters: under FALSE, 32 blank Flooding
+##   cells, 63 all-blank manure rows, 8 blank standing-water cells and 82
+##   partially answered handwashing rows are silently converted to negatives
+##   BEFORE the missing-data report runs, so none of them ever appear in it.
+STRICT_MISSING <- TRUE
+
+## EDU_STRICT_TERTIARY
+##   FALSE reproduces the original: any response matching
+##   "Diploma|Certificate|degree|BTech|Post graduate" is level 3 (tertiary).
+##   That sweeps in "Certificate with <Std 10/Gr.12" (n = 18) and "Diploma
+##   with <Std 10/ Gr.12" (n = 7) -- 25 households holding a sub-matric
+##   certificate -- alongside Bachelor's degrees.
+##   TRUE sends those 25 to level 1.
+##   THIS CHANGES A HEADLINE RESULT. Education_3 has global Moran's I = 0.115
+##   (p = 0.006) under FALSE and I = 0.043 (p = 0.17) under TRUE. Whichever
+##   you submit, report the other as a sensitivity analysis.
+EDU_STRICT_TERTIARY <- FALSE
+
+## EXPOSURE_UNION
+##   FALSE reproduces the original: Months_tested counts months with an ESBL
+##   result only. That denominator is wrong for 22 of 164 households when it
+##   is used as the exposure for EC or KP (their columns disagree with the
+##   ESBL column on which months were cultured).
+##   TRUE counts a month as cultured if ANY of the three organisms has a
+##   readable result.
+EXPOSURE_UNION <- TRUE
+
+## PORTABILITY. The previous version passed fileEncoding = "UTF-8", which
+## tells R to RE-ENCODE the file into the session's native encoding. In a
+## non-UTF-8 locale (a plain `Rscript` under LC_CTYPE=C, and the default on
+## many Windows installs) that re-encoding fails on the first curly quote and
+## R returns a frame with ZERO rows after only a warning:
+##     "invalid input found on input connection 'full_AIARMS_df.csv'"
+## The script then dies further down with an opaque rowSums() error. Passing
+## encoding = "UTF-8" instead MARKS the strings as UTF-8 without re-encoding,
+## which works in every locale.
+##
+## A second correction to the old comment: the en-dashes in the income bands
+## are ALREADY mojibake in the export ("R19201 - R38400" was written by a
+## double-encoding upstream). No reader argument can undo that. What matters
+## is that none of the recodes below match on those characters -- the income
+## bands are matched by their leading ASCII prefix, education by ASCII
+## keywords -- so the mojibake is cosmetic and harmless here. Do not "fix" it
+## by editing the CSV.
 raw <- read.csv(RAW_PATH, stringsAsFactors = FALSE, check.names = TRUE,
-                fileEncoding = "UTF-8", na.strings = c("", "NA", "na", "N/A"))
+                encoding = "UTF-8", na.strings = c("", "NA", "na", "N/A"))
 
 cat("Raw dimensions:", dim(raw), "\n")
+if (nrow(raw) == 0L)
+  stop("Read 0 rows from ", RAW_PATH,
+       " -- check the file path and that the export is not empty.")
 
 ## ---------------------------------------------------------------------------
 ## 1. Small helper functions
@@ -77,9 +205,19 @@ col <- function(stem) {
 ## Yes/No -> 1/0
 yn <- function(x) ifelse(x == "Yes", 1L, ifelse(x == "No", 0L, NA_integer_))
 
-## "Select all that apply" checkbox blocks: a blank cell means "not ticked",
-## not "unknown", so NA is legitimately recoded to 0.
+## TRUE checkbox blocks: the export writes a value only where the box was
+## ticked, so a blank genuinely means "not ticked" and 0 is correct. This is
+## the case for X112 (water source), where 130 of 164 cells are blank.
 yn0 <- function(x) ifelse(!is.na(x) & x == "Yes", 1L, 0L)
+
+## Yes/No ITEMS that happen to live inside a grid. Here the export writes an
+## explicit "No", so a blank is a non-response, not a negative. Under
+## STRICT_MISSING it becomes NA and is handled by the imputation step in
+## section 9 like every other missing cell.
+yn_item <- function(x) {
+  if (STRICT_MISSING) ifelse(x == "Yes", 1L, ifelse(x == "No", 0L, NA_integer_))
+  else                ifelse(!is.na(x) & x == "Yes", 1L, 0L)
+}
 
 ## Grab every column of a checkbox block, e.g. block("X123") returns
 ## X123.1..Before.eating ... X123.8..When.your.hands.appear.dirty
@@ -146,22 +284,41 @@ ES <- sapply(months, function(m) esbl_pos(raw[[paste0("ESBL_", m)]]))
 ## times, `Months_tested` is carried into the model as a Gaussian covariate:
 ## mgm has no offset term, so conditioning on the exposure is the closest
 ## available equivalent to a rate model.
+## Months actually cultured. The original definition counted months with an
+## ESBL result only. Checked against the export: the EC column disagrees with
+## the ESBL column about which months were cultured for 71 of 164 households
+## and the KP column for 74, so an ESBL-only denominator is not a valid
+## exposure for EC_pos_n or KP_pos_n. The union rule below counts a month as
+## cultured if any of the three organisms returned a readable result; it
+## differs from the ESBL-only count for 22 households, by at most 2 months.
+months_any <- (!is.na(EC)) | (!is.na(KP)) | (!is.na(ES))
+
 D <- data.frame(
   Study_code    = raw$Study_code,
   EC_pos_n      = rowSums(EC, na.rm = TRUE),
   KP_pos_n      = rowSums(KP, na.rm = TRUE),
   ESBL_pos_n    = rowSums(ES, na.rm = TRUE),
-  Months_tested = rowSums(!is.na(ES)),
+  Months_tested = if (EXPOSURE_UNION) rowSums(months_any) else rowSums(!is.na(ES)),
   stringsAsFactors = FALSE
 )
+
+## Four households have no readable culture result in any month. Their
+## carriage counts are structural zeros, not observed zeros, and they drag
+## every carriage statistic towards zero. They are KEPT so that n matches the
+## survey sample, but they are flagged here so the write-up can say so and so
+## that a rate analysis can exclude them.
+cat("Households with zero cultured months:", sum(D$Months_tested == 0), "\n")
 
 ## Convenience binaries (not used in the default model, handy for checks)
 D$ESBL_ever <- as.integer(D$ESBL_pos_n > 0)
 D$KP_ever   <- as.integer(D$KP_pos_n   > 0)
 
-## NOTE: E. coli carriage is near-saturated (~97% of cultured months positive),
-## so EC_pos_n carries almost no variance and is excluded from the default
-## variable set. It is kept in the frame in case you want to model it.
+## NOTE: E. coli carriage is near-saturated -- 97.1% of cultured months are
+## positive (952 of 981 readable EC cells) -- so most of the variance in
+## EC_pos_n comes from how many months a household was cultured
+## (r = 0.93 with Months_tested). It is nonetheless INCLUDED in the model
+## alongside KP and ESBL so that all three target markers are represented;
+## expect its main edge to be with Months_tested.
 
 ## ---------------------------------------------------------------------------
 ## 4. DEMOGRAPHY AND SOCIO-ECONOMIC POSITION
@@ -184,11 +341,19 @@ D$Crowding <- D$HHsize / D$Rooms                                       # "g"
 ## Highest household education, collapsed to 3 ordered-but-nominal levels.
 ## MGM treats "c" variables as unordered; collapsing avoids 18 sparse states.
 edu <- col("X52\\.\\.")
+## A qualification whose own label says "<Std 10/Gr.12" was obtained without
+## matric. Under EDU_STRICT_TERTIARY it is level 1, not level 3. See the note
+## on the switch: this moves 25 households and changes the Education_3
+## spatial result.
+tert <- grepl("Diploma|Certificate|degree|BTech|Post graduate", edu)
+if (EDU_STRICT_TERTIARY) tert <- tert & !grepl("<\\s*Std 10", edu)
 D$Education <- ifelse(
-  grepl("Diploma|Certificate|degree|BTech|Post graduate", edu), 3L,
+  tert, 3L,
   ifelse(grepl("Grade 12|Grade 13", edu) & !grepl("Attend Grade 12", edu), 2L,
          ifelse(!is.na(edu), 1L, NA_integer_)))                        # "c", 3
 # 1 = primary / incomplete secondary, 2 = completed secondary, 3 = tertiary
+cat("Education levels (EDU_STRICT_TERTIARY =", EDU_STRICT_TERTIARY, "):\n")
+print(table(D$Education, useNA = "ifany"))
 
 ws <- col("X53\\.\\.")
 D$WorkStatus <- ifelse(ws %in% c("Employer","Paid employee","Self-employed",
@@ -238,14 +403,33 @@ D$ToiletShared   <- yn(col("X121\\.\\."))                              # "c", 2
 D$ToiletFloods   <- yn(col("X120\\.\\."))                              # "c", 2
 D$OpenDefecation <- as.integer(col("X122\\.\\.") != "Never")           # "c", 2
 
-D$StandingWater  <- as.integer(yn0(block("X126", 1)))                              # "c", 2
-D$Flooding       <- as.integer(yn0(block("X128", 1)))                              # "c", 2
+## X126.1 and X128.1 are Yes/No items, not tick boxes: the export records an
+## explicit "No" (X126.1 is Yes 105 / No 56 / blank 8; X128.1 has 32 blanks).
+## yn_item() therefore treats a blank as missing under STRICT_MISSING.
+D$StandingWater  <- as.integer(yn_item(block("X126", 1)))              # "c", 2
+D$Flooding       <- as.integer(yn_item(block("X128", 1)))              # "c", 2
 D$RefuseCollected <- as.integer(startsWith(
   ifelse(is.na(col("X108\\.\\.")), "", col("X108\\.\\.")), "Removed")) # "c", 2
 
-## Handwashing: 8 checkboxes summed into a 0-8 practice score. A sum of
+## Handwashing: 8 Yes/No items summed into a 0-8 practice score. A sum of
 ## indicators is exactly the kind of variable the Poisson node is for.
-D$HandwashScore <- rowSums(block("X123", 1:8) == "Yes", na.rm = TRUE)  # "p"
+##
+## These items also carry an explicit "No", and 82 of 164 households leave
+## between 1 and 7 of them blank. Summing "== Yes" over the raw block counts
+## every blank as a No and pushes those 82 scores down. Under STRICT_MISSING
+## the score is prorated over the items the household actually answered, and
+## set to NA (for section 9 to impute) when fewer than five were answered.
+hw      <- block("X123", 1:8)
+hw_yes  <- rowSums(hw == "Yes", na.rm = TRUE)
+hw_ans  <- rowSums(!is.na(hw))
+if (STRICT_MISSING) {
+  D$HandwashScore <- ifelse(hw_ans >= 5L,
+                            as.integer(round(8 * hw_yes / hw_ans)),
+                            NA_integer_)                               # "p"
+  cat("Handwashing items answered per household:\n"); print(table(hw_ans))
+} else {
+  D$HandwashScore <- hw_yes                                            # "p"
+}
 
 ## ---------------------------------------------------------------------------
 ## 6. HEALTH SERVICE USE AND ANTIBIOTIC BEHAVIOUR
@@ -304,8 +488,20 @@ for (j in 1:6) {
 D$MeatFreq <- meat_level - 1                                           # "g"
 
 D$AnimalsKept <- yn(col("X157\\.\\."))                                 # "c", 2
-D$ManureUse   <- as.integer(rowSums(block("X150", 1:5) == "Yes",
-                                    na.rm = TRUE) > 0)                 # "c", 2
+## Manure: five Yes/No items. 63 of 164 households leave all five blank --
+## under the old rule every one of them became "does not use manure". Under
+## STRICT_MISSING an all-blank row is missing; a partially answered row is an
+## OR over the items that were answered.
+mn      <- block("X150", 1:5)
+mn_yes  <- rowSums(mn == "Yes", na.rm = TRUE)
+mn_ans  <- rowSums(!is.na(mn))
+## (braces, not a bare multi-line if/else: at the console R closes the `if`
+## at the end of the first line and the stray `else` is a syntax error)
+D$ManureUse <- if (STRICT_MISSING) {
+  ifelse(mn_ans > 0L, as.integer(mn_yes > 0), NA_integer_)
+} else {
+  as.integer(mn_yes > 0)
+}                                                                      # "c", 2
 
 ## ---------------------------------------------------------------------------
 ## 8. Variable registry: name -> type, level, group
@@ -318,6 +514,7 @@ registry <- tibble::tribble(
   ~var,             ~type, ~level, ~group,        ~label,
   # --- outcomes -------------------------------------------------------------
   "ESBL_pos_n",     "p",   1L,     "Carriage",    "ESBL+ months",
+  "EC_pos_n",       "p",   1L,     "Carriage",    "E. coli+ months",
   "KP_pos_n",       "p",   1L,     "Carriage",    "K. pneumoniae+ months",
   "Months_tested",  "g",   1L,     "Carriage",    "Months cultured",
   # --- demography / SES -----------------------------------------------------
@@ -358,7 +555,7 @@ registry <- tibble::tribble(
 ## A smaller "core" set for when you want more power per parameter. With
 ## n = 164 the full 32-node model is a genuinely high-dimensional problem
 ## (the l1 penalty keeps it identified, but sensitivity is low).
-core_vars <- c("ESBL_pos_n","KP_pos_n","Months_tested","Age","Sex","HHsize",
+core_vars <- c("ESBL_pos_n","EC_pos_n","KP_pos_n","Months_tested","Age","Sex","HHsize",
                "Crowding","Education","IncomeBand","PipedInside","FlushToilet",
                "ToiletShared","OpenDefecation","StandingWater","HandwashScore",
                "HIVinHH","AbxNoRx","AbxSource","AbxCourse","AnimalsKept")
@@ -372,7 +569,11 @@ core_vars <- c("ESBL_pos_n","KP_pos_n","Months_tested","Age","Sex","HHsize",
 IMPUTE <- TRUE
 
 miss_report <- sapply(registry$var, function(v) sum(is.na(D[[v]])))
-cat("\nMissing cells per model variable:\n"); print(miss_report[miss_report > 0])
+cat("\nMissing cells per model variable (STRICT_MISSING =", STRICT_MISSING, "):\n")
+if (any(miss_report > 0)) print(miss_report[miss_report > 0]) else cat("  none\n")
+cat(sprintf("Total missing cells: %d across %d variables (%.2f%% of the matrix)\n",
+            sum(miss_report), sum(miss_report > 0),
+            100 * sum(miss_report) / (nrow(D) * nrow(registry))))
 
 if (IMPUTE) {
   for (i in seq_len(nrow(registry))) {
@@ -448,9 +649,45 @@ cat("\nSaved:", file.path(OUT_DIR, "AIARMS_mgm.rds"), "\n")
 cat("Model matrix:", nrow(AIARMS$data), "rows x", ncol(AIARMS$data), "nodes\n")
 print(table(AIARMS$type))
 
-``` 
+## The sentence in Section 1 of the report that counts variable types has to
+## match this, so print it in the report's own words rather than from memory.
+n_bin <- sum(registry$type == "c" & registry$level == 2)
+n_cat <- sum(registry$type == "c" & registry$level >  2)
+n_cnt <- sum(registry$type == "p")
+n_con <- sum(registry$type == "g")
+cat(sprintf(
+  "\nFOR THE REPORT: %d variables -- %d binary indicators, %d categorical,\n%d counts and %d continuous measurements.\n",
+  nrow(registry), n_bin, n_cat, n_cnt, n_con))
+cat("(Of the", n_con, "Gaussian nodes only Age and Crowding are genuinely\n",
+    "continuous; Months_tested, IncomeBand and MeatFreq are bounded ordinal\n",
+    "scores declared 'g'. Say so in the report rather than calling them\n",
+    "continuous measurements.)\n")
 
-```{r Spatial component}
+## ---------------------------------------------------------------------------
+## 12. Tidy up two helpers that shadow base R
+## ---------------------------------------------------------------------------
+## col() above shadows base::col() (the column indices of a matrix) and norm()
+## shadows base::norm(). Inside this script that is harmless -- nothing here
+## wants the base versions. It stops being harmless the moment this section
+## shares a global environment with anything else: the spatial analysis
+## unpacks a matrix with base::col(), which would reach the questionnaire
+## helper instead and fail with
+##     No column starting with: 0.14146335481534...
+## because the matrix gets pasted into a regular expression. Both helpers have
+## done their job by this point, so they do not stay in the workspace.
+rm(col, norm)
+
+```
+
+---
+
+# The spatial block {#spatial-block}
+
+`01b_add_spatial.R`. Joins the coordinates back on, projects them to local
+metres, drops the two geocoding outliers, derives the spatial covariates and
+extends the registry. This is where the fieldwork site codes become nodes.
+
+```{r Spatial component, purl=FALSE}
 ###############################################################################
 # 01b_add_spatial.R
 #
@@ -472,7 +709,20 @@ print(table(AIARMS$type))
 #   * Node renamed Zone -> Site, and its categories keep their real codes, so
 #     the Area Profile and showInteraction() output name actual sites instead
 #     of the integers 1..4.
-#   * SITE_MIN_N dropped from 20 to 10. At 20 the merge loop collapsed seven
+#   * SITE_MIN_N is 0: no site is merged, so ARUF (n = 3) keeps its own
+#     level and all seven codes survive.
+#   * SITE_ENCODING is "dummy_full": SEVEN binary nodes, one per site code,
+#     labelled "Site ARUE" ... "Site ARUU". Every site appears in the network
+#     as itself, with its own edges and its own sign. This is the encoding
+#     that answers "which covariates attach to ARUU?" directly.
+#     The cost is real and is handled, not ignored: the seven dummies sum to
+#     1 in every row, so the SITE-TO-SITE edges among them are an artefact of
+#     the coding. The app suppresses that block by default and the write-up
+#     must state it. Site-to-covariate edges are what this encoding is for.
+#     "categorical" (one node, seven levels) is the identified alternative
+#     and stays available; "dummy_reference" drops ARUE entirely. See
+#     section 0.
+#   * Previously SITE_MIN_N was dropped from 20 to 10. At 20 the merge loop collapsed seven
 #     sites into four (ARUF -> ARUU, then ARUS -> ARUO, then ARUU -> ARUO),
 #     which is exactly the site identity you wanted to keep. At 10 only ARUF
 #     merges. Set SITE_MIN_N <- 0 to keep all seven codes untouched.
@@ -531,9 +781,18 @@ D      <- AIARMS$clean_frame
 ## How the fieldwork site enters the model. All three produce valid models;
 ## they answer the question differently. Numbers below are from this cohort.
 ##
-##   "categorical"     ONE node, level = m. mgm handles it natively. Per-site
-##                     detail is recovered with showInteraction(). One edge per
-##                     partner, no sign.
+##   "categorical"     ONE node, level = m -- THE DEFAULT HERE. Every site
+##                     code is a level of that node, so all seven appear and
+##                     none is a reference. mgm handles it natively: the
+##                     nodewise model for Site is one multinomial regression,
+##                     and the m x (u-1) parameters behind each edge are
+##                     aggregated into a single weight (Haslbeck & Waldorp
+##                     2020, Sec. 2.2). Per-site detail is recovered with
+##                     showInteraction(). One edge per partner, and no sign,
+##                     because a sign is not definable for m > 2.
+##                     Caveat to state in the write-up: ARUF has n = 3, so
+##                     that level is estimated from three households. Read
+##                     any edge that turns on ARUF as hypothesis-generating.
 ##
 ##   "dummy_reference" m-1 BINARY nodes, one site held out as reference.
 ##                     RECOMMENDED if you want per-site nodes: each site gets
@@ -544,28 +803,41 @@ D      <- AIARMS$clean_frame
 ##                     predictors, nothing degenerate. Cost: the reference site
 ##                     has no node, and every effect is read relative to it.
 ##
-##   "dummy_full"      ALL m binary nodes. This is the one that breaks. The
-##                     dummies sum to 1 in every row, so predicting any one
-##                     from the other m-1 gives R^2 = 1.000000 exactly. Each
-##                     site node's own nodewise logistic regression is then
-##                     perfectly separated: its predictors determine it with
-##                     certainty. glmnet will not error -- the L1 penalty keeps
-##                     a solution finite -- but the coefficients are not
-##                     identified, the lasso picks arbitrarily among equivalent
-##                     solutions, and you get a clique of strong artefactual
-##                     edges among the site nodes that is an artefact of the
-##                     coding, not of the data. Which site attaches to an
-##                     outcome then flips between bootstrap samples.
-##                     Provided so you can see it; not recommended.
+##   "dummy_full"      ALL m binary nodes -- THE DEFAULT HERE. Every site code
+##                     is a node in its own right: ARUE, ARUF, ARUL, ARUO,
+##                     ARUS, ARUT, ARUU each appear in the network with their
+##                     own edges and, because binary nodes are coded 0/1 with
+##                     binarySign = TRUE, their own SIGN. Nothing is held out
+##                     and no edge is a contrast against a reference site.
+##
+##                     THE COST, STATED PLAINLY. The dummies sum to 1 in every
+##                     row, so predicting any one from the other m-1 gives
+##                     R^2 = 1 exactly. Two consequences:
+##                       (i)  each site node's own nodewise logistic regression
+##                            is perfectly separated by the other six, which
+##                            produces a clique of strong SITE-TO-SITE edges
+##                            that is an artefact of the coding. Ignore that
+##                            block; the app zeroes it by default.
+##                       (ii) inside a COVARIATE's regression the seven dummies
+##                            plus the intercept are rank-deficient, so the
+##                            lasso picks one of several equivalent solutions.
+##                            Site-to-covariate edges are therefore stable in
+##                            aggregate but which individual site carries an
+##                            effect can move between bootstrap samples. Check
+##                            anything you intend to report against the
+##                            Stability tab, and against the "categorical" fit.
+##
+##                     Use "categorical" when you need an identified model to
+##                     defend; use this when you need to see the sites.
 ##
 ## Note: mgm's own overparameterize = TRUE is NOT this. There the indicators
 ## are predictors inside another node's design matrix and never receive a
 ## conditional model of their own, which is why the L1 penalty is enough there
 ## and is not enough here.
-SITE_ENCODING  <- "dummy_reference"
+SITE_ENCODING  <- "dummy_full"    # one binary node per site; all seven kept
 SITE_REFERENCE <- NULL   # NULL = use the largest site; or name one, e.g. "ARUE"
 
-SITE_MIN_N     <- 10     # merge a site into its nearest neighbour below this n
+SITE_MIN_N     <- 0      # merge a site into its nearest neighbour below this n
                          #   0  -> keep all seven codes exactly as they are
                          #   10 -> only ARUF (n = 3) merges, leaving six sites
                          #   20 -> collapses to four zones (the old behaviour)
@@ -579,7 +851,8 @@ K_NN           <- 8      # neighbours for the spatial weights matrix
 ## 1. Join coordinates back on Study_code
 ## ---------------------------------------------------------------------------
 raw <- read.csv(RAW_PATH, stringsAsFactors = FALSE, check.names = TRUE,
-                fileEncoding = "UTF-8", na.strings = c("", "NA", "na", "N/A"))
+                encoding = "UTF-8", na.strings = c("", "NA", "na", "N/A"))
+stopifnot(nrow(raw) > 0L)                      # see the note in 01 on encoding
 raw <- raw[!duplicated(raw$Study_code), ]      # same de-duplication as 01
 
 geo <- raw[, c("Study_code", "Longitude.x", "Latitude.x")]
@@ -686,6 +959,11 @@ site_vars <- character(0)
 if (SITE_ENCODING == "categorical") {
   D$Site    <- as.integer(site_f)                                     # "c", m
   site_vars <- "Site"
+  ## The integer code is what mgm needs, but nothing downstream should ever
+  ## have to guess that 4 means ARUO. site_levels travels with the object and
+  ## is what the spatial analysis and the plots label with.
+  site_levels <- site_labels
+  names(site_levels) <- seq_along(site_labels)
 
 } else {
   ## One binary node per site, coded 0/1 so binarySign = TRUE gives each a sign.
@@ -701,11 +979,12 @@ if (SITE_ENCODING == "categorical") {
         sprintf("(n = %d)\n", sum(site == ref)))
   } else if (SITE_ENCODING == "dummy_full") {
     kept <- all_sites
-    warning("SITE_ENCODING = 'dummy_full': the site dummies sum to 1 in every ",
-            "row and are exactly collinear (R^2 = 1). Nodewise regressions for ",
-            "these nodes are perfectly separated and the edges among them are ",
-            "artefacts of the coding. Use 'dummy_reference' unless you are ",
-            "deliberately inspecting that artefact.", call. = FALSE)
+    message("SITE_ENCODING = 'dummy_full': all ", length(kept), " site codes ",
+            "get their own binary node.\n",
+            "  The dummies sum to 1 in every row, so the SITE-TO-SITE edges ",
+            "among them are an\n  artefact of the coding, not a finding. Read ",
+            "site-to-covariate edges only; the app\n  suppresses the site-site ",
+            "block by default. Report this in the methodology.")
   } else {
     stop("SITE_ENCODING must be 'categorical', 'dummy_reference' or 'dummy_full'.")
   }
@@ -738,13 +1017,25 @@ D$Dist_centre_km <- sqrt((D$x_m - mean(D$x_m))^2 +
 ## Used by the Moran's I diagnostics in 02_fit_mgm.R. Symmetrised so that
 ## "i is a neighbour of j" implies the reverse, then row-standardised so each
 ## household's neighbours carry a total weight of 1.
+## CORRECTNESS NOTE. The previous version took order(dmat[i, ])[2:(K_NN+1)]
+## and assumed position 1 is household i. That holds only when i is the
+## unique minimiser of its own distance row. Seven pairs of households in
+## this cohort sit at identical coordinates, so for 7 of the 162 rows
+## order() put the OTHER household first and i itself second -- and i was
+## then written into its own neighbour set. After symmetrising and row
+## standardising, diag(W) was nonzero for those 7 rows, up to w_ii = 0.182.
+## The report defines w_ii = 0 (Section 2.1), so this was a direct conflict
+## with the written methodology. Excluding i explicitly fixes it. The effect
+## on the numbers is small -- Moran's I for RefuseCollected moves from
+## 0.2272 to 0.2184 -- but the matrix is now the one the report describes.
 W <- matrix(0, nrow(D), nrow(D))
 for (i in seq_len(nrow(D))) {
-  nb <- order(dmat[i, ])[2:(K_NN + 1)]   # [1] is the household itself
+  nb <- setdiff(order(dmat[i, ]), i)[seq_len(K_NN)]
   W[i, nb] <- 1
 }
 W <- (W + t(W)) / 2
 W <- W / rowSums(W)
+stopifnot(all(diag(W) == 0), all(abs(rowSums(W) - 1) < 1e-12))
 
 ## ---------------------------------------------------------------------------
 ## 6. Spatially lagged carriage  (derived, but OFF by default)
@@ -789,11 +1080,14 @@ INCLUDE_DENSITY <- TRUE
 
 site_reg <- if (SITE_ENCODING == "categorical") {
   data.frame(var = "Site", type = "c", level = as.integer(n_site),
-             group = "Spatial", label = "Fieldwork site",
+             group = "Spatial",
+             label = "Fieldwork site",
              stringsAsFactors = FALSE)
 } else {
   data.frame(var = site_vars, type = "c", level = 2L, group = "Spatial",
-             label = paste("Site", sub("^Site_", "", site_vars)),
+             label = if (SITE_ENCODING == "dummy_reference")
+                       sprintf("Site %s (vs %s)", sub("^Site_", "", site_vars), ref)
+                     else paste("Site", sub("^Site_", "", site_vars)),
              stringsAsFactors = FALSE)
 }
 
@@ -900,7 +1194,7 @@ AIARMS_SP <- list(
   W            = W,
   K_NN         = K_NN,
   radius_m     = RADIUS_M,
-  site_labels  = site_labels,      # every retained site code
+  site_labels  = site_labels,      # every retained site code, in level order
   site_vars    = site_vars,        # the node name(s) carrying site information
   site_encoding = SITE_ENCODING,
   site_group   = D$Site_group,     # merged code per household, as text
@@ -937,7 +1231,16 @@ if (SITE_ENCODING == "categorical") {
 }
 ```
 
-```{r Mixed Graphical Models}  
+---
+
+# The mixed graphical model {#mgm-fit}
+
+`02_fit_mgm.R`. One $\ell_1$-penalised GLM per node, stitched into a graph
+(Algorithm 1 of Haslbeck & Waldorp 2020), then predictability, the network
+plot, Moran's I on raw variables and on model residuals, and the bootstrap
+stability assessment.
+
+```{r Mixed Graphical Models, purl=FALSE}
 ###############################################################################
 # 02_fit_mgm.R   (spatial-enabled)
 #
@@ -954,7 +1257,11 @@ if (SITE_ENCODING == "categorical") {
 # Set USE_SPATIAL <- FALSE to reproduce the original non-spatial analysis.
 ###############################################################################
 
-rm(list = ls())
+## In a combined run the earlier sections have already written their .rds
+## outputs, so nothing here needs a clean slate -- and rm(list = ls()) part way
+## through a knit would delete objects the later sections rely on. Run
+## standalone, it behaves exactly as before.
+if (!isTRUE(getOption("knitr.in.progress"))) rm(list = ls())
 set.seed(1)     # cross-validation and the bootstrap are both stochastic
 
 pkgs <- c("mgm", "qgraph")
@@ -1104,8 +1411,16 @@ if (USE_SPATIAL) {
     z <- v - mean(v)
     I_obs  <- Ifun(z)
     I_perm <- replicate(nperm, Ifun(sample(z)))
+    ## The previous version compared |I_perm| with |I_obs|, i.e. it tested
+    ## against a null centred at ZERO. Under randomisation E[I] = -1/(n-1),
+    ## not 0, and the report says so explicitly. The doubled-smaller-tail
+    ## p-value below needs no centring assumption at all and is the same
+    ## rule used throughout spatial_autocorrelation_MGM.Rmd, so the two
+    ## documents now report the same p-value for the same statistic.
+    hi <- (1 + sum(I_perm >= I_obs)) / (1 + nperm)
+    lo <- (1 + sum(I_perm <= I_obs)) / (1 + nperm)
     list(I = I_obs, expected = -1/(n - 1),
-         p = (sum(abs(I_perm) >= abs(I_obs)) + 1) / (nperm + 1))
+         p = min(1, 2 * min(hi, lo)))
   }
 
   ## (a) RAW autocorrelation, variable by variable.
@@ -1127,8 +1442,14 @@ if (USE_SPATIAL) {
   ## which is far harder to interpret, so they are skipped.
   cont <- which(type %in% c("g", "p"))
   cat("\n=== Moran's I on MGM residuals (continuous / count nodes) ===\n")
+  ## Poisson nodes get PEARSON residuals. A raw count residual has variance
+  ## proportional to its own mean, so Moran's I on raw Poisson residuals is a
+  ## weighted statistic on heteroscedastic input and the households with the
+  ## largest fitted counts dominate it. Dividing by sqrt(mu) removes that.
   res_I <- t(sapply(cont, function(j) {
-    resid_j <- X[, j] - pred$predicted[, j]
+    mu      <- pred$predicted[, j]
+    resid_j <- if (type[j] == "p") (X[, j] - mu) / sqrt(pmax(mu, 1e-8))
+               else                 X[, j] - mu
     r <- moran_test(resid_j, W)
     c(raw_I = raw_I[j, "I"], resid_I = r$I, p = r$p)
   }))
@@ -1235,22 +1556,1081 @@ saveRDS(list(fit = fit_mgm, X = X, type = type, level = level,
 
 cat("\nWrote outputs to ./", OUT_DIR, "\n", sep = "")
 
-``` 
+```
+
+---
+
+## Why the spatial analysis consumes the cleaned object
+
+The earlier version of this analysis cleaned the raw export itself. It no longer
+does. It now consumes **`output/AIARMS_mgm_spatial.rds`**, the object produced by
+`01_clean_AIARMS.R` and `01b_add_spatial.R` in `MGM_Research.Rmd`, so the MGM and
+the spatial analysis are computed on the same 162 rows, the same recodes, and
+the same variable definitions. There is one cleaning script in the project, not
+two.
+
+That object carries a **registry** (`var`, `type`, `level`, `group`, `label`),
+which is a genuine advantage here rather than just convenient bookkeeping.
+Declaring that `Education` is `"c"` with `level = 3` is a statement that the
+integer codes 1, 2, 3 are *unordered* --- and that statement changes which
+spatial statistic is admissible for it (Section \@ref(expand)). The registry
+drives the analysis rather than being carried alongside it.
+
+Three consequences of using their variable set instead of mine, all
+improvements:
+
+* **Handwashing is now a 0--8 score**, not eight separate binaries. In the previous version two handwashing indicators had to be dropped for near-zero variance (160/161 and 153/156 positive). As a Poisson node the information survives and is testable.
+* **Site membership and neighbourhood density are in the frame.** They are spatial by construction, so they are excluded from the substantive results --- but they make excellent positive controls (Section \@ref(controls)).
+* **Carriage is a count over a varying number of cultured months.** `Months_tested` is in the registry, so the confounding can be tested directly rather than assumed away (Section \@ref(carriage)).
+
+```{r libs}
+## Only these two are needed. Every figure is base graphics, so the tangled
+## core -- and therefore the Shiny app -- carries no plotting dependency.
+suppressPackageStartupMessages({
+  library(sf)      # only for the projection cross-check in Section 3
+  library(spdep)   # neighbours, weights, reference implementations
+})
+```
+
+```{r paths, purl=FALSE}
+MGM_RDS <- "output/AIARMS_mgm_spatial.rds"
+CC_RDS  <- "output_cc/AIARMS_mgm_spatial.rds"   # complete-case build, Section 12
+K_DEF   <- 8   # matches K_NN in 01b_add_spatial.R
+```
+
+```{r load, purl=FALSE}
+stopifnot(file.exists(MGM_RDS))
+A <- readRDS(MGM_RDS)
+cat(sprintf("%d households x %d nodes\n", nrow(A$data), ncol(A$data)))
+print(table(type = A$type))
+knitr::kable(A$registry, caption = "The registry, as built by 01/01b")
+```
+
+---
+
+## Registry-driven variable expansion {#expand}
+
+Moran's I is a covariance-like quantity: it needs a variable whose numeric
+values mean something. For a **binary** or **numeric** node that is fine. For a
+node the registry declares as `"c"` with `level > 2`, it is not. `WorkStatus`
+is coded 1 = employed, 2 = unemployed, 3 = pensioner/other, and mgm is told to
+treat those as unordered precisely because the numbering is arbitrary. Running
+Moran's I on that code would silently assert that "unemployed" sits midway
+between "employed" and "pensioner", and the answer would change if the levels
+were renumbered.
+
+So every `"c"` node with `level > 2` is expanded into its `level` indicator
+variables, and each indicator is tested on its own. The question becomes the
+one that survives renumbering: *do households with tertiary education cluster?*
+rather than *is the education code spatially autocorrelated?*
+
+Three of the five expanded nodes --- `Education`, `DiarrSeverity`, `AbxCourse`
+--- happen to be substantively ordered even though mgm treats them as nominal.
+The indicator decomposition is still the right default, because it is the
+registry that governs; Section \@ref(joincounts) adds the whole-variable test
+for all five.
+
+```{r expand-core}
+## Their equirectangular x_m / y_m are already in metres, so coordinates are
+## taken straight from the object rather than re-projected.
+mgm_coords <- function(A) A$coords
+
+## Site is a categorical node whose integer codes stand for ARUE, ARUF, ARUL,
+## ARUO, ARUS, ARUT, ARUU. level_name() turns the code back into the code the
+## fieldwork used, so nothing downstream is ever labelled "Site = 4".
+level_name <- function(A, v, l) {
+  if (identical(v, "Site") && !is.null(A$site_labels) &&
+      l >= 1 && l <= length(A$site_labels)) A$site_labels[l] else as.character(l)
+}
+
+expand_registry <- function(A) {
+  R <- A$registry; D <- A$clean_frame
+  out <- list(); meta <- list()
+  for (i in seq_len(nrow(R))) {
+    v <- R$var[i]; ty <- R$type[i]; lv <- R$level[i]
+    if (ty == "c" && lv > 2) {
+      for (l in sort(unique(D[[v]]))) {
+        ln <- level_name(A, v, l)
+        nm <- sprintf("%s_%s", v, ln)
+        out[[nm]]  <- as.numeric(D[[v]] == l)
+        meta[[nm]] <- data.frame(var = nm, parent = v, kind = "indicator",
+                                 group = R$group[i],
+                                 label = sprintf("%s = %s", R$label[i], ln),
+                                 stringsAsFactors = FALSE)
+      }
+    } else {
+      out[[v]]  <- as.numeric(D[[v]])
+      meta[[v]] <- data.frame(var = v, parent = NA_character_,
+                              kind = if (ty == "c") "binary" else ty,
+                              group = R$group[i], label = R$label[i],
+                              stringsAsFactors = FALSE)
+    }
+  }
+  list(X = as.data.frame(out), meta = do.call(rbind, meta))
+}
+```
+
+```{r expand-run, purl=FALSE}
+E <- expand_registry(A)
+cat(sprintf("%d registry nodes -> %d analysis variables\n",
+            nrow(A$registry), ncol(E$X)))
+print(table(kind = E$meta$kind))
+knitr::kable(subset(E$meta, !is.na(parent))[, c("var", "parent", "label")],
+             row.names = FALSE, caption = "Nodes expanded into level indicators")
+```
+
+---
+
+## Coordinates and weights
+
+`01b_add_spatial.R` uses an equirectangular projection about the median point
+rather than a formal CRS, on the argument that over a study area a couple of
+kilometres across the error is negligible. That is worth checking rather than
+accepting, because every distance downstream depends on it.
+
+```{r projcheck, purl=FALSE}
+ll  <- setNames(as.data.frame(A$lonlat), c("lon", "lat"))
+utm <- sf::st_coordinates(
+  sf::st_transform(sf::st_as_sf(ll, coords = c("lon","lat"), crs = 4326), 32736))
+d_eq  <- as.matrix(dist(mgm_coords(A)))
+d_utm <- as.matrix(dist(utm))
+cat(sprintf("max absolute difference: %.2f m over a maximum separation of %.0f m\n",
+            max(abs(d_eq - d_utm)), max(d_utm)))
+cat(sprintf("max relative difference: %.3f %%\n",
+            100 * max(abs(d_eq - d_utm)[d_utm > 0] / d_utm[d_utm > 0])))
+```
+
+The claim holds: the largest disagreement is 4.93 m on a maximum separation of
+2286 m, i.e. 0.27% in the worst case and far less typically. The equirectangular
+coordinates are used throughout so that these results and the Moran diagnostics
+inside `02_fit_mgm.R` sit on identical geometry. (Note for the write-up: the
+extent of the retained cohort is about 2.3 km, not 2.9 km. The 2.9 km figure in
+an earlier draft predates the outlier drop.)
+
+**What the report has to say about $\mathbf{W}$.** Equation (1) of the report
+defines $w_{ij}$ as a binary critical-distance rule with $d$ chosen at the first
+peak of a Moran's I correlogram. That is not what runs here, and it is not what
+should run: on this cohort Moran's I decays monotonically with distance, so a
+"first peak" lands at 50-75 m and leaves 14-28 of the 162 households with no
+neighbours at all. What runs, in `01b` and here, is $k = 8$ nearest neighbours,
+row-standardised, with $w_{ii} = 0$. Section 2.1 of the report is written to
+match that, and the distance-band matrices appear in Section
+\@ref(sensitivity) as the sensitivity check they are.
+
+`01b` builds the same neighbour sets but symmetrises by averaging the indicator
+matrix with its transpose rather than by union. The two give the same neighbour
+*set* (1662 nonzero cells either way); averaging only halves the weight on a
+one-directional link before standardising, so the matrices differ slightly in
+their entries. Both are defensible; the difference is quantified in Section
+\@ref(sensitivity) and the app lets either be used. `k = 8` is carried over as
+the default so nothing silently diverges from `01b`.
+
+```{r weights-core}
+AIARMS_CRS <- 32736   # only used if lon/lat are supplied instead of metric coords
+
+as_points <- function(d, crs = AIARMS_CRS) {
+  p <- sf::st_as_sf(d, coords = c("lon", "lat"), crs = 4326, remove = FALSE)
+  sf::st_transform(p, crs)
+}
+
+## Accepts a coordinate matrix in metres, or a frame with lon/lat columns.
+coords_of <- function(d, coords = NULL) {
+  if (!is.null(coords)) return(as.matrix(coords))
+  sf::st_coordinates(as_points(d))
+}
+
+make_listw <- function(coords, type = c("knn", "dist", "idw"),
+                       k = 6, d = 400, alpha = 1, style = "W", d0 = 1) {
+  type <- match.arg(type)
+  n <- nrow(coords)
+  if (type == "knn") {
+    k  <- min(k, n - 1L)
+    nb <- spdep::knn2nb(spdep::knearneigh(coords, k = k), sym = FALSE)
+    lw <- spdep::nb2listw(nb, style = style, zero.policy = TRUE)
+  } else if (type == "dist") {
+    nb <- spdep::dnearneigh(coords, 0, d)
+    lw <- spdep::nb2listw(nb, style = style, zero.policy = TRUE)
+  } else {
+    nb    <- spdep::dnearneigh(coords, 0, d)
+    dl    <- spdep::nbdists(nb, coords)
+    ## d0 is a distance floor: some households share exact coordinates and
+    ## 1/0 would be Inf.
+    glist <- lapply(dl, function(x) 1 / (pmax(x, d0)^alpha))
+    lw    <- spdep::nb2listw(nb, glist = glist, style = style, zero.policy = TRUE)
+  }
+  attr(lw, "n_isolated") <- sum(spdep::card(lw$neighbours) == 0L)
+  lw
+}
+```
+
+---
+
+## The estimators, written in the report's notation
+
+The three statistics below are coded directly from equations (2), (3) and (4)
+of Section 2.1 of the research report, in the report's own notation, so that
+what runs and what is written down are the same object. (Equation (1) in the
+report is the definition of $w_{ij}$, so Moran's I is (2), Geary's C is (3)
+and the local Moran is (4). Earlier drafts of this file referred to them as
+(1)-(3); the numbering below is the one in the submitted report.) Let $Z(\mathbf{s}_i)$
+be the attribute at location $\mathbf{s}_i$, let $\bar{Z}$ be its mean, let
+$w_{ij}$ be the spatial weight linking $i$ and $j$, let
+$w_{\cdot\cdot} = \sum_i\sum_j w_{ij}$, and let
+$S^2 = \frac{1}{n-1}\sum_{i=1}^n (Z(\mathbf{s}_i) - \bar{Z})^2$.
+
+**Moran's I**, report equation (2):
+
+$$I = \frac{n}{(n-1)S^2 w_{\cdot\cdot}}
+      \sum_{i=1}^n\sum_{j=1}^n w_{ij}
+      \bigl(Z(\mathbf{s}_i)-\bar{Z}\bigr)\bigl(Z(\mathbf{s}_j)-\bar{Z}\bigr)$$
+
+Under the null of no spatial autocorrelation $E[I] = -\frac{1}{n-1}$, so that
+is the reference line on every plot below, not zero. $I > -\frac{1}{n-1}$ means
+a location tends to be connected to locations with similar values;
+$I < -\frac{1}{n-1}$ means connected locations tend to hold dissimilar values.
+
+**Geary's C**, report equation (3):
+
+$$C = \frac{1}{2S^2 w_{\cdot\cdot}}
+      \sum_{i=1}^n\sum_{j=1}^n w_{ij}
+      \bigl(Z(\mathbf{s}_i)-Z(\mathbf{s}_j)\bigr)^2$$
+
+$C > 1$ means locations are connected to locations with dissimilar values;
+$C < 1$ means connected locations hold similar values. Both are reported
+together for the reason the report gives: $C$ is the more sensitive of the two
+to differences between immediate neighbours while $I$ responds to the broader
+pattern, so agreement between them is stronger evidence than either alone.
+
+**Local Moran (LISA)**, report equation (4):
+
+$$I_i = \frac{n\,(Z_i-\bar{Z})\sum_j w_{ij}(Z_j-\bar{Z})}
+              {\sum_i (Z_i-\bar{Z})^2}$$
+
+This is the scaling that gives Anselin's defining LISA property --- the sum
+over all observations is proportional to the global measure. Here it holds
+exactly: $\frac{1}{n}\sum_i I_i = I$ under row standardisation, and that is
+one of the checks in Section \@ref(verify).
+
+Two notes on how each is coded. Since $(n-1)S^2 = \sum_i(Z_i-\bar{Z})^2$,
+$I$ and $C$ are evaluated with that substitution, which is the same quantity
+written without forming $S^2$ separately. And the double sum in $C$ would be an
+$O(n^2)$ loop, so it is expanded as
+
+$$\sum_i\sum_j w_{ij}(Z_i-Z_j)^2
+ = \sum_i\Bigl[Z_i^2\textstyle\sum_j w_{ij} - 2Z_i\sum_j w_{ij}Z_j
+   + \sum_j w_{ij}Z_j^2\Bigr]$$
+
+which is three spatial lag operations. Both rearrangements are algebraic
+identities, and Section \@ref(verify) checks the coded values against
+`spdep`'s independent implementations rather than taking that on trust.
+
+```{r estimators-core}
+## Report equation (2). n / [(n-1) S^2 w..] * sum_i sum_j w_ij (Z_i - Zbar)(Z_j - Zbar),
+## evaluated using (n-1) S^2 = sum_i (Z_i - Zbar)^2.
+moran_I <- function(Z, lw) {
+  n     <- length(Z)
+  Zc    <- Z - mean(Z)                                   # Z_i - Zbar
+  w_dd  <- spdep::Szero(lw)                              # w..
+  lagZc <- spdep::lag.listw(lw, Zc, zero.policy = TRUE)  # sum_j w_ij (Z_j - Zbar)
+  (n / w_dd) * sum(Zc * lagZc) / sum(Zc^2)
+}
+
+## Report equation (3). 1 / [2 S^2 w..] * sum_i sum_j w_ij (Z_i - Z_j)^2,
+## with the double sum expanded into three lag operations:
+##   sum_i [ Z_i^2 sum_j w_ij  -  2 Z_i sum_j w_ij Z_j  +  sum_j w_ij Z_j^2 ]
+geary_C <- function(Z, lw) {
+  n     <- length(Z)
+  Zc    <- Z - mean(Z)
+  w_dd  <- spdep::Szero(lw)
+  w_i   <- spdep::lag.listw(lw, rep(1, n), zero.policy = TRUE)  # sum_j w_ij
+  lagZ  <- spdep::lag.listw(lw, Z,         zero.policy = TRUE)  # sum_j w_ij Z_j
+  lagZ2 <- spdep::lag.listw(lw, Z^2,       zero.policy = TRUE)  # sum_j w_ij Z_j^2
+  ((n - 1) * sum(w_i * Z^2 - 2 * Z * lagZ + lagZ2)) / (2 * w_dd * sum(Zc^2))
+}
+
+## Report equation (4). I_i = n (Z_i - Zbar) sum_j w_ij (Z_j - Zbar) / sum_i (Z_i - Zbar)^2.
+## Quadrants classify each site by the signs of (Z_i - Zbar) and its spatial lag:
+## High-High and Low-Low are positive local association (clusters), High-Low and
+## Low-High are negative local association (the checkerboard case).
+local_moran <- function(Z, lw) {
+  n     <- length(Z)
+  Zc    <- Z - mean(Z)
+  lagZc <- spdep::lag.listw(lw, Zc, zero.policy = TRUE)
+  Ii    <- n * Zc * lagZc / sum(Zc^2)
+  quad  <- ifelse(Zc >= 0 & lagZc >= 0, "High-High",
+           ifelse(Zc <  0 & lagZc <  0, "Low-Low",
+           ifelse(Zc >= 0 & lagZc <  0, "High-Low", "Low-High")))
+  data.frame(Zc = Zc, lag_Zc = lagZc, Ii = Ii,
+             quadrant = quad, stringsAsFactors = FALSE)
+}
+```
+
+---
+
+## Inference by permutation
+
+Most variables here are binary indicators or small counts, so the normal
+approximation behind the randomisation variance of Moran's I is not
+trustworthy. Everything is tested by Monte Carlo permutation, with the
+conventional doubled-smaller-tail two-sided $p$-value.
+
+```{r perm-core}
+mc_pack <- function(obs, sim) {
+  nsim <- length(sim)
+  hi <- (1 + sum(sim >= obs)) / (1 + nsim)
+  lo <- (1 + sum(sim <= obs)) / (1 + nsim)
+  list(statistic = obs, sim = sim, nsim = nsim,
+       p_greater = hi, p_less = lo, p_two = min(1, 2 * min(hi, lo)),
+       E_sim = mean(sim), sd_sim = stats::sd(sim),
+       z_sim = (obs - mean(sim)) / stats::sd(sim))
+}
+
+perm_moran <- function(x, lw, nsim = 999, seed = 1) {
+  set.seed(seed)
+  mc_pack(moran_I(x, lw), replicate(nsim, moran_I(sample(x), lw)))
+}
+
+```
+
+A LISA permutation must hold $z_i$ **fixed** at location $i$ and reshuffle only
+the other $n-1$ values [@anselin1995local]; a global reshuffle would move $z_i$
+as well and answer a different question.
+
+```{r localperm-core}
+local_moran_perm <- function(Z, lw, nsim = 999, seed = 1) {
+  set.seed(seed)
+  n     <- length(Z); Zc <- Z - mean(Z); SS <- sum(Zc^2)
+  nb    <- lw$neighbours; wt <- lw$weights
+  lagZc <- spdep::lag.listw(lw, Zc, zero.policy = TRUE)
+  Ii    <- n * Zc * lagZc / SS                       # report equation (4)
+  p     <- rep(NA_real_, n)
+  for (i in seq_len(n)) {
+    ki <- length(nb[[i]]); if (ki == 0L || is.na(Ii[i])) next
+    pool  <- Zc[-i]                                  # Z_i is held out
+    ## WITHOUT replacement: the conditional null of Anselin (1995) draws k_i
+    ## of the remaining n-1 values, it does not resample them. With
+    ## replacement (the previous version) the draw variance is inflated by
+    ## a factor (n-1)/(n-1-k_i+1) and the local p-values come out slightly
+    ## conservative.
+    draws <- vapply(seq_len(nsim), function(b) pool[sample.int(n - 1L, ki)],
+                    numeric(ki))
+    if (ki == 1L) draws <- matrix(draws, 1L, nsim)
+    sim   <- n * Zc[i] * colSums(draws * wt[[i]]) / SS
+    hi <- (1 + sum(sim >= Ii[i])) / (1 + nsim)
+    lo <- (1 + sum(sim <= Ii[i])) / (1 + nsim)
+    p[i] <- min(1, 2 * min(hi, lo))
+  }
+  quad <- ifelse(Zc >= 0 & lagZc >= 0, "High-High",
+          ifelse(Zc <  0 & lagZc <  0, "Low-Low",
+          ifelse(Zc >= 0 & lagZc <  0, "High-Low", "Low-High")))
+  data.frame(Zc = Zc, lag_Zc = lagZc, Ii = Ii, p = p,
+             q_BH = stats::p.adjust(p, "BH"), quadrant = quad,
+             stringsAsFactors = FALSE)
+}
+
+## Getis-Ord Gi*, following Mtshawu et al. (2023), who pair I with Gi* maps.
+getis_gstar <- function(x, lw, nsim = 999, seed = 1) {
+  lwS <- spdep::nb2listw(spdep::include.self(lw$neighbours),
+                         style = "W", zero.policy = TRUE)
+  g <- spdep::localG_perm(x, lwS, nsim = nsim, iseed = seed)
+  data.frame(Gstar = as.numeric(g), p = attr(g, "internals")[, "Pr(z != E(Gi))"])
+}
+
+## Whole-variable test for an UNORDERED categorical: the multi-colour join
+## count (Cliff & Ord), permuted. Moran's I on the integer code is not a
+## coherent alternative; this is.
+## NOTE ON WEIGHTS. A join count counts joins, so it is defined on BINARY
+## weights. Passing a row-standardised listw runs without error but returns a
+## weighted sum, not a count -- the "same_colour" column then reads 10.24
+## rather than 81.96 for the same configuration. The p-values are identical
+## (the permutation ranks are unchanged by the row scaling), but the estimate
+## column is not a count and must not be reported as one. binary_listw()
+## rebuilds the same neighbour graph with style = "B".
+binary_listw <- function(lw)
+  spdep::nb2listw(spdep::make.sym.nb(lw$neighbours), style = "B",
+                  zero.policy = TRUE)
+
+joincount_cat <- function(x, lw, nsim = 999, seed = 1) {
+  set.seed(seed)
+  f  <- factor(x)
+  lw <- binary_listw(lw)
+  jc <- spdep::joincount.mc(f, lw, nsim = nsim, zero.policy = TRUE)
+  ## BUG FIX. joincount.mc() returns an htest/mc.sim object in which
+  ##     $statistic   is the OBSERVED same-colour join count
+  ##     $estimate[1] is "mean of simulation"
+  ##     $estimate[2] is "variance of simulation"
+  ## The previous version read $estimate[1] into the "same_colour" column and
+  ## $estimate[2] into "expected", so the table printed the permutation mean
+  ## as the observed count and the permutation VARIANCE as the expected
+  ## count. For Education level 1 that is 98.4 and 55.8 where the true values
+  ## are 96 observed against 98.4 expected -- i.e. the old table showed a
+  ## level with FEWER same-colour joins than chance as though it had more.
+  ## The p-values were never affected. Cross-checked against
+  ## joincount.test(): observed 96.00, expectation 98.13, variance 57.18.
+  ##
+  ## Note also that joincount.mc is one-sided ("greater"), which is the
+  ## convention for a join count: clustering means MORE same-colour joins
+  ## than chance. Say so in the write-up; it is not the two-sided rule used
+  ## for Moran's I elsewhere in this document.
+  do.call(rbind, lapply(seq_along(jc), function(i)
+    data.frame(level       = levels(f)[i],
+               same_colour = unname(jc[[i]]$statistic),
+               expected    = unname(jc[[i]]$estimate[1]),
+               sd_sim      = sqrt(unname(jc[[i]]$estimate[2])),
+               p_greater   = jc[[i]]$p.value, stringsAsFactors = FALSE)))
+}
+```
+
+## A dense-matrix path for the permutation loops
+
+@amgalan2022fast make the point that spatial autocorrelation is a quadratic
+form and should be evaluated as one. With $n = 162$ the weights matrix is tiny,
+so all $B$ permutations are done as a single matrix product. Algebraically
+identical to the loops above (checked in Section \@ref(verify)), roughly two
+orders of magnitude faster, and that is what makes 20,000 permutations across
+861 variable pairs a 30-second computation rather than a six-hour one.
+
+```{r fastcore}
+listw_to_W <- function(lw) as.matrix(spdep::listw2mat(lw))
+
+moran_I_W <- function(x, W) {
+  n <- length(x); z <- x - mean(x)
+  (n / sum(W)) * sum(z * (W %*% z)) / sum(z^2)
+}
+
+perm_moran_W <- function(x, W, nsim = 999, seed = 1) {
+  set.seed(seed); n <- length(x); z <- x - mean(x)
+  obs <- (n / sum(W)) * sum(z * (W %*% z)) / sum(z^2)
+  Z   <- matrix(z[replicate(nsim, sample.int(n))], n, nsim)
+  mc_pack(obs, (n / sum(W)) * colSums(Z * (W %*% Z)) / sum(z^2))
+}
+
+bh_matrix <- function(P) {
+  ## BH over the upper triangle only: p.adjust on the whole symmetric matrix
+  ## would count each pair twice and treat the NA diagonal as a test.
+  ut <- upper.tri(P)
+  q  <- matrix(NA_real_, nrow(P), ncol(P), dimnames = dimnames(P))
+  q[ut] <- stats::p.adjust(P[ut], "BH")
+  q[lower.tri(q)] <- t(q)[lower.tri(q)]
+  q
+}
+```
+
+---
+
+## Verification {#verify}
+
+Nothing here is asserted; it is tested. Every check runs at knit time and the
+document fails to build if any fails.
+
+```{r verify, purl=FALSE}
+ok <- function(label, a, b, tol = 1e-9) {
+  pass <- isTRUE(all.equal(a, b, tolerance = tol))
+  cat(sprintf("%-54s %s   max|diff| = %.2e\n", label,
+              if (pass) "PASS" else "**FAIL**", max(abs(a - b))))
+  stopifnot(pass)
+}
+
+xy <- mgm_coords(A)
+lw <- make_listw(xy, "knn", k = K_DEF, style = "W")
+W  <- listw_to_W(lw)
+n  <- nrow(xy)
+x  <- E$X$Crowding; y <- E$X$HandwashScore; b <- E$X$RefuseCollected
+
+cat("-- estimator definitions vs spdep --------------------------------\n")
+ok("Moran I vs spdep::moran()",
+   moran_I(x, lw), spdep::moran(x, lw, n = n, S0 = spdep::Szero(lw))$I)
+ok("Moran I vs spdep::moran.test()",
+   moran_I(x, lw), unname(spdep::moran.test(x, lw)$estimate[1]))
+ok("Geary C vs spdep::geary()",
+   geary_C(x, lw), spdep::geary(x, lw, n = n, n1 = n - 1, S0 = spdep::Szero(lw))$C)
+## spdep::localmoran uses the same n scaling as report equation (3); confirmed
+## empirically here rather than taken from the documentation.
+ok("local Moran (eq. 4) vs spdep::localmoran()",
+   unname(local_moran(x, lw)$Ii), unname(spdep::localmoran(x, lw)[, "Ii"]))
+
+cat("\n-- algebraic identities under row-standardisation ----------------\n")
+ok("S0 == n", spdep::Szero(lw), n)
+ok("mean(I_i) == I  (Anselin LISA property, eq. 4)",
+   mean(local_moran(x, lw)$Ii), moran_I(x, lw))
+zz <- x - mean(x); lzz <- spdep::lag.listw(lw, zz)
+ok("I == slope of Wz on z through the origin",
+   moran_I(x, lw), sum(zz * lzz) / sum(zz^2))
+ok("E[I] under randomisation == -1/(n-1)",
+   unname(spdep::moran.test(x, lw)$estimate[2]), -1 / (n - 1))
+cat("\n-- binary covariate: Moran I recovers the BB join count ----------\n")
+nb_sym <- spdep::make.sym.nb(spdep::knn2nb(spdep::knearneigh(xy, k = K_DEF)))
+lwB <- spdep::nb2listw(nb_sym, style = "B")
+BB  <- unname(spdep::joincount.test(factor(b, levels = c(0, 1)), lwB)[[2]]$estimate[1])
+zb  <- b - mean(b); S0B <- spdep::Szero(lwB); K <- sum(spdep::card(nb_sym) * b)
+ok("BB = [I S0 sum(z^2)/n + 2 xbar K - xbar^2 S0] / 2",
+   (moran_I(b, lwB) * S0B * sum(zb^2) / n + 2 * mean(b) * K - mean(b)^2 * S0B) / 2,
+   BB, tol = 1e-6)
+
+cat("\n-- dense-matrix path is identical to the listw path --------------\n")
+ok("Moran: listw vs dense", moran_I(x, lw), moran_I_W(x, W))
+ok("permutation p identical for a shared seed",
+   perm_moran(x, lw, nsim = 999, seed = 7)$p_two,
+   perm_moran_W(x, W, nsim = 999, seed = 7)$p_two)
+
+cat("\n-- the weights matrix carried in the MGM object ------------------\n")
+ok("their W is row-standardised", unname(rowSums(A$W)), rep(1, n))
+cat(sprintf("   Moran I(RefuseCollected):  their W = %+.4f | spdep knn k=8 = %+.4f\n",
+            moran_I_W(b, A$W), moran_I(b, lw)))
+
+```
+
+---
+
+## Positive controls {#controls}
+
+`Site_*` and `NN_density` are spatial **by construction**: a site dummy is a
+contiguous patch of the study area, and density is defined from the coordinates.
+Testing them for spatial autocorrelation is circular, so they are excluded from
+the substantive results. They are exactly what a positive control should be
+though --- if the machinery could not find clustering in a variable that is
+literally a map region, nothing else it reported would be believable.
+
+```{r controls, purl=FALSE}
+sp_vars <- E$meta$var[E$meta$group == "Spatial"]
+ctrl <- do.call(rbind, lapply(sp_vars, function(v) {
+  pm <- perm_moran_W(E$X[[v]], W, nsim = 9999, seed = 1)
+  data.frame(variable = v, moran_I = pm$statistic, z = pm$z_sim,
+             p = pm$p_two, geary_C = geary_C(E$X[[v]], lw))
+}))
+knitr::kable(ctrl, digits = c(0, 3, 1, 4, 3), row.names = FALSE,
+             caption = "Positive controls: spatial by construction")
+```
+
+```{r controls-range, purl=FALSE}
+cat(sprintf("Moran's I between %.2f and %.2f, Geary's C between %.2f and %.2f.\n",
+            min(ctrl$moran_I), max(ctrl$moran_I),
+            min(ctrl$geary_C), max(ctrl$geary_C)))
+```
+
+The estimator recovers what it should. The range is printed rather than
+asserted because it depends on the site encoding: with all seven codes kept,
+`Site_ARUF` (n = 3) sits near I = 0.25 while every other site is above 0.70, so
+a hard-coded "0.61 to 0.91" -- correct for the older run in which ARUF was
+merged away -- is wrong for this one. **A site with three households is a weak
+positive control, not a finding.**
+
+---
+
+## Global results
+
+```{r global-core}
+global_table <- function(X, coords, vars = names(X),
+                         wcfg = list(type = "knn", k = 8, style = "W"),
+                         nsim = 9999, seed = 1) {
+  lw <- do.call(make_listw, c(list(coords = as.matrix(coords)), wcfg))
+  W  <- listw_to_W(lw)
+  out <- do.call(rbind, lapply(vars, function(v) {
+    pm <- perm_moran_W(X[[v]], W, nsim = nsim, seed = seed)
+    data.frame(variable = v, moran_I = pm$statistic, EI = -1 / (nrow(X) - 1),
+               sd_perm = pm$sd_sim, z_perm = pm$z_sim, p_perm = pm$p_two,
+               geary_C = geary_C(X[[v]], lw), stringsAsFactors = FALSE)
+  }))
+  out$q_BH <- stats::p.adjust(out$p_perm, "BH")
+  out[order(-out$moran_I), ]
+}
+```
+
+```{r global-run, purl=FALSE}
+cov_vars <- E$meta$var[E$meta$group != "Spatial"]
+G <- global_table(E$X, xy, cov_vars, wcfg = list(type = "knn", k = K_DEF, style = "W"),
+                  nsim = 9999, seed = 1)
+G <- merge(G, E$meta[, c("var", "group", "label")], by.x = "variable", by.y = "var")
+G <- G[order(-G$moran_I), ]
+knitr::kable(G[, c("variable", "group", "moran_I", "z_perm", "p_perm", "q_BH", "geary_C")],
+             digits = c(0, 0, 4, 2, 4, 4, 3), row.names = FALSE)
+```
+
+```{r global-plot, purl=FALSE, fig.height=9}
+gp <- G[order(G$moran_I), ]
+op <- par(mar = c(4, 11, 2, 1))
+cols <- ifelse(gp$q_BH < 0.05, "#B2182B",
+        ifelse(gp$p_perm < 0.05, "#EF8A62", "grey72"))
+bp <- barplot(gp$moran_I, horiz = TRUE, names.arg = gp$variable, las = 1,
+              col = cols, border = NA, cex.names = 0.62,
+              xlim = range(gp$moran_I - 2 * gp$sd_perm, gp$moran_I + 2 * gp$sd_perm),
+              xlab = "Global Moran's I")
+abline(v = -1 / (nrow(E$X) - 1), lty = 2, col = "grey40")
+segments(gp$moran_I - 1.96 * gp$sd_perm, bp,
+         gp$moran_I + 1.96 * gp$sd_perm, bp, col = "grey30")
+legend("bottomright", bty = "n", cex = 0.8, border = NA,
+       fill = c("#B2182B", "#EF8A62", "grey72"),
+       legend = c(sprintf("q < 0.05 (BH, %d tests)", nrow(G)),
+                  "p < 0.05 only", "not significant"))
+par(op)
+```
+
+The pattern is coherent and is itself a check on the method. What clusters is
+**infrastructure and the built environment** --- refuse collection, dwelling
+type, shared toilets, household flooding. Those are delivered or experienced
+street by street, so they should cluster. What does not cluster is **individual
+attributes** --- age, sex, work status, income band, care-seeking, antibiotic
+behaviour, chronic conditions. There is no mechanism by which one household's
+respondent age should predict a neighbour's, and Moran's I duly finds nothing.
+A procedure that reported clustering of respondent age would be suspect.
+
+One result that only the indicator expansion could produce: **`Education_3`**
+(tertiary education) clusters, while `Education_1` and `Education_2` do not.
+Collapsed to a single ordinal score that signal is diluted, because it lives
+entirely in the top level. This is the concrete payoff of letting the registry
+govern the statistic.
+
+**But this one result is conditional on a coding decision, and the write-up has
+to say so.** `01_clean_AIARMS.R` assigns level 3 to any response matching
+`Diploma|Certificate|degree|BTech|Post graduate`. That sweeps in "Certificate
+with &lt;Std 10/Gr.12" (n = 18) and "Diploma with &lt;Std 10/ Gr.12" (n = 7):
+25 households whose own qualification label says it was obtained without
+matric. Setting `EDU_STRICT_TERTIARY <- TRUE` moves those 25 to level 1, and
+`Education_3` then falls from $I = 0.115$ ($p = 0.006$) to $I = 0.043$
+($p = 0.17$) -- it stops being a finding. Nothing else in the table moves. Pick
+the definition you can defend in the methodology, and report the other as a
+sensitivity analysis; do not report the significant version alone.
+
+`HIVinHH` also survives correction ($I = 0.112$, $q = 0.034$) and should be
+named alongside the WASH variables. It complicates the tidy "infrastructure
+clusters, individual attributes do not" reading, which is a reason to report it
+rather than a reason to leave it out.
+
+---
+
+## Whole-variable tests for the nominal nodes {#joincounts}
+
+The indicator results answer "does this level cluster?". The complementary
+question --- "is this variable, as a whole, spatially arranged?" --- is the
+multi-colour join count, which needs no numeric coding at all.
+
+```{r jc-run, purl=FALSE}
+nominal <- unique(na.omit(E$meta$parent))
+JC <- do.call(rbind, lapply(nominal, function(v) {
+  r <- joincount_cat(A$clean_frame[[v]], lw, nsim = 9999, seed = 2)
+  cbind(variable = v, r)
+}))
+knitr::kable(JC, digits = c(0, 0, 1, 1, 2, 4), row.names = FALSE,
+             caption = paste("Multi-colour join counts on binary weights,",
+                             "9999 permutations, one-sided (more same-colour",
+                             "joins than chance)"))
+```
+
+The join counts agree with the indicator analysis: the only nominal node with
+spatial structure is education, and it sits in the tertiary level.
+
+---
+
+## Local structure: Moran scatterplot and LISA {#lisa}
+
+```{r lisa-run, purl=FALSE}
+VAR <- G$variable[1]
+LI  <- local_moran_perm(E$X[[VAR]], lw, nsim = 9999, seed = 3)
+LI$sig <- !is.na(LI$p) & LI$p < 0.05          # unadjusted; see the note below
+cat("sites at p < 0.05:", sum(LI$sig),
+    "| sites at q < 0.05 (BH over", nrow(LI), "local tests):",
+    sum(LI$q_BH < 0.05, na.rm = TRUE), "\n")
+table(quadrant = LI$quadrant, significant = LI$sig)
+```
+
+```{r lisa-plots, purl=FALSE, fig.width=10, fig.height=4.8}
+pal <- c("High-High" = "#B2182B", "Low-Low" = "#2166AC",
+         "High-Low"  = "#F4A582", "Low-High" = "#92C5DE")
+op <- par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+plot(LI$Zc, LI$lag_Zc, pch = 21, cex = 1.1,
+     bg = ifelse(LI$sig, pal[LI$quadrant], "white"), col = pal[LI$quadrant],
+     xlab = paste(VAR, "(centred)"), ylab = "spatial lag",
+     main = "Moran scatterplot")
+abline(h = 0, v = 0, col = "grey70")
+abline(a = 0, b = moran_I(E$X[[VAR]], lw), col = "#B2182B", lwd = 2)
+legend("topleft", bty = "n", cex = 0.75, legend = names(pal), pch = 21,
+       col = pal, pt.bg = pal)
+plot(A$lonlat[, 1], A$lonlat[, 2],
+     asp = 1 / cos(mean(A$lonlat[, 2]) * pi / 180), pch = 21, cex = 1.2,
+     bg = ifelse(LI$sig, pal[LI$quadrant], "grey92"),
+     col = ifelse(LI$sig, "grey20", "grey70"),
+     xlab = "longitude", ylab = "latitude",
+     main = paste("LISA cluster map:", VAR))
+par(op)
+```
+
+**No local site survives Benjamini--Hochberg** across the 162 local tests, and
+raising the replicate count does not change that: at `nsim = 19999` the
+attainable floor ($1\times10^{-4}$) is already below the threshold BH would
+require ($3.1\times10^{-4}$), so this is a real result rather than a resolution
+artefact. That is the ordinary situation for a LISA, and it is why
+@anselin1995local treats the multiple-comparison problem for local statistics as
+open rather than settled. The map is therefore **exploratory** --- it identifies
+candidate neighbourhoods, it does not confirm them. The global results carry the
+confirmatory weight; those do survive correction.
+
+A second caution, specific to the many binary indicators in this variable set:
+for a binary covariate with prevalence $\pi$, a High--High site contributes
+$(1-\pi)^2$ to $I_i$ and a Low--Low site $\pi^2$. The two positive quadrants are
+therefore not equally easy to detect, and for an unbalanced indicator the
+cluster map will look one-sided. That is a property of the statistic, not a
+finding about the neighbourhoods. @hu2020uncovering is the reason the negative
+quadrants stay on the map rather than being folded into a "hotspot" summary.
+
+---
+
+## Sensitivity {#sensitivity}
+
+## Complete-case versus the imputed frame
+
+`01_clean_AIARMS.R` fills missing cells with the median (numeric) or mode
+(categorical), which is the right call for `mgm()` --- it cannot take `NA` at
+all. It is not automatically the right call for a spatial statistic, so the
+comparison has to be made rather than assumed.
+
+The comparison needs a second build of the same pipeline with `IMPUTE <- FALSE`,
+written to `output_cc/` so it sits beside the imputed one rather than replacing
+it. The chunk below does that by re-running the cleaning and spatial sections
+out of this document with the two switches overridden, in their own
+environment so nothing in the current workspace is disturbed. It runs once ---
+if `output_cc/` is already there it does nothing --- and takes about fifteen
+seconds.
+
+```{r cc-build, purl=FALSE}
+## Set to FALSE if you would rather not have the second build happen
+## automatically; the section below then reports that it was skipped.
+BUILD_CC <- TRUE
+
+## Defined here as well as in the paths chunk, so this section stands on its
+## own when you run it by hand rather than from the top of the document.
+CC_RDS <- "output_cc/AIARMS_mgm_spatial.rds"
+
+## Pull one named chunk out of an .Rmd as plain text.
+rmd_chunk_text <- function(rmd, label) {
+  x      <- readLines(rmd, warn = FALSE)
+  opens  <- grep("^```\\{r", x)
+  fences <- grep("^```\\s*$", x)
+  for (o in opens) {
+    if (identical(trimws(sub("^```\\{r[ ,]*([^,}]*).*$", "\\1", x[o])), label)) {
+      cl <- fences[fences > o][1]
+      if (!is.na(cl) && cl > o + 1) return(paste(x[(o + 1):(cl - 1)], collapse = "\n"))
+    }
+  }
+  NULL
+}
+
+## The cleaning sections live in this file when it is the combined document,
+## and in MGM_Research.Rmd when this is the standalone spatial document, so
+## both are searched.
+chunk_source <- function(label) {
+  here <- tryCatch(knitr::current_input(), error = function(e) NULL)
+  cands <- unique(c(here, "WST795_analysis.Rmd", "MGM_Research.Rmd"))
+  for (f in cands) {
+    if (is.null(f) || !nzchar(f) || !file.exists(f)) next
+    b <- rmd_chunk_text(f, label)
+    if (!is.null(b)) return(b)
+  }
+  NULL
+}
+
+if (BUILD_CC && !file.exists(CC_RDS)) {
+  msg <- tryCatch({
+    s1 <- chunk_source("Data Cleaning")
+    s2 <- chunk_source("Spatial component")
+    if (is.null(s1) || is.null(s2))
+      stop("could not find the 'Data Cleaning' and 'Spatial component' chunks")
+    code <- paste(s1, s2, sep = "\n")
+    ## The two switches, overridden in the source rather than set afterwards,
+    ## because both sections assign them near the top of their own bodies.
+    code <- gsub('OUT_DIR  <- "output"', 'OUT_DIR  <- "output_cc"', code, fixed = TRUE)
+    code <- sub('IMPUTE <- TRUE',        'IMPUTE <- FALSE',         code, fixed = TRUE)
+
+    ## Run it in a SEPARATE R PROCESS, which is how you would run it by hand.
+    ## Two reasons it cannot simply be eval()ed here:
+    ##   * the cleaning section opens with rm(list = ls()), which would wipe
+    ##     the objects the imputed analysis above is still using;
+    ##   * the spatial section checks its prerequisites with
+    ##     vapply(need, exists, logical(1)), and exists() resolves against the
+    ##     global environment rather than a private one -- so evaluating the
+    ##     code into a new.env() fails with "Section 7 needs objects built
+    ##     earlier in this script". Its own comment says as much.
+    tmp <- file.path(tempdir(), "cc_build.R")
+    writeLines(code, tmp)
+    rscript <- file.path(R.home("bin"),
+      if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
+    out <- suppressWarnings(system2(rscript,
+      c("-e", shQuote(sprintf('setwd("%s"); source("%s")',
+                              normalizePath(getwd(), winslash = "/"),
+                              normalizePath(tmp,      winslash = "/")))),
+      stdout = TRUE, stderr = TRUE))
+    st <- attr(out, "status")
+    if (!is.null(st) && st != 0)
+      stop("the build exited with status ", st, ":\n",
+           paste(utils::tail(out, 8), collapse = "\n"))
+    if (!file.exists(CC_RDS))
+      stop("the build ran but did not write ", CC_RDS)
+    Acc <- readRDS(CC_RDS)
+    sprintf("built %s -- n = %d complete cases, %d nodes, %d site codes retained",
+            CC_RDS, nrow(Acc$data), ncol(Acc$data), length(Acc$site_labels))
+  }, error = function(e) paste("complete-case build failed:", conditionMessage(e)))
+  cat(msg, "\n")
+} else if (!BUILD_CC) {
+  cat("BUILD_CC is FALSE -- the complete-case comparison below is skipped.\n")
+} else {
+  cat("using the existing", CC_RDS, "\n")
+}
+```
+
+```{r cc, purl=FALSE, eval=file.exists("output_cc/AIARMS_mgm_spatial.rds")}
+## Guarded in the body as well as in the chunk option, so running this chunk on
+## its own prints an explanation instead of failing inside readRDS().
+if (!file.exists(CC_RDS)) {
+  cat("No complete-case build found at", CC_RDS,
+      "\nRun the cc-build chunk above with BUILD_CC <- TRUE.\n")
+} else {
+Ac <- readRDS(CC_RDS); Ec <- expand_registry(Ac)
+Wc <- listw_to_W(make_listw(mgm_coords(Ac), "knn", k = K_DEF, style = "W"))
+vv <- intersect(cov_vars, names(Ec$X))
+S <- data.frame(
+  variable  = vv,
+  imputed   = sapply(vv, function(v) moran_I_W(E$X[[v]],  W)),
+  complete  = sapply(vv, function(v) moran_I_W(Ec$X[[v]], Wc)))
+S$shift <- S$complete - S$imputed
+S <- S[order(-abs(S$shift)), ]
+cat(sprintf("n = %d (imputed) versus n = %d (complete case)\n",
+            nrow(E$X), nrow(Ec$X)))
+cat(sprintf("correlation of Moran's I across the two frames: %.4f\n",
+            cor(S$imputed, S$complete)))
+print(knitr::kable(head(S, 10), digits = 4, row.names = FALSE,
+                   caption = "Largest shifts in Moran's I"))
+}
+```
+
+### What this comparison actually shows, and it is not what an earlier draft said
+
+The honest handling of blank survey items (`STRICT_MISSING`, Section 2) changed
+this section's conclusion, and the change is worth reporting rather than
+quietly absorbing.
+
+```{r cc-cost, purl=FALSE, eval=file.exists("output_cc/AIARMS_mgm_spatial.rds")}
+Aimp <- readRDS("output/AIARMS_mgm.rds")
+Acc  <- readRDS("output_cc/AIARMS_mgm.rds")
+Simp <- readRDS(MGM_RDS); Scc <- readRDS(CC_RDS)
+cat(sprintf("listwise deletion: %d of %d households retained, %d lost (%.0f%%)\n",
+            nrow(Acc$clean_frame), nrow(Aimp$clean_frame),
+            nrow(Aimp$clean_frame) - nrow(Acc$clean_frame),
+            100 * (1 - nrow(Acc$clean_frame) / nrow(Aimp$clean_frame))))
+cat(sprintf("site codes: %d retained of %d%s\n",
+            length(Scc$site_labels), length(Simp$site_labels),
+            if (length(setdiff(Simp$site_labels, Scc$site_labels)))
+              paste0(" -- lost entirely: ",
+                     paste(setdiff(Simp$site_labels, Scc$site_labels), collapse = ", "))
+            else ""))
+knitr::kable(as.data.frame(rbind(
+  imputed       = table(Simp$site_group)[Simp$site_labels],
+  `complete case` = table(Scc$site_group)[Simp$site_labels])),
+  caption = "Households per site under each frame")
+```
+
+Under the blank-as-no coding, listwise deletion cost 22 households and the two
+frames agreed almost perfectly, which made it easy to report the comparison as
+reassuring. Once the blanks are treated as the non-responses they are, the
+picture is different: the missingness is concentrated in `ManureUse` (63
+all-blank rows) and `Flooding` (32), so **listwise deletion now removes more
+than half the sample**, and the correlation of Moran's $I$ across the two frames
+falls to roughly 0.72.
+
+The right conclusion is therefore **not** "the two agree, so imputation is
+harmless". It is that at this level of item non-response a complete-case
+analysis is **not a viable comparison at all** --- it is a different and much
+smaller study, on a neighbour graph rebuilt from a third of the households, with
+one fieldwork site (`ARUF`) disappearing entirely and `ARUE` falling from 46
+households to 14. Differences between the two frames are dominated by **sample
+composition**, not by imputation bias, and they were before as well; what has
+changed is that the effect is now too large to describe as a minor shift.
+
+That is an argument *for* single imputation in this setting, and it is a
+stronger one than the old paragraph made. State it that way: `mgm()` cannot
+accept `NA` at all, so some completion is mandatory, and the alternative here
+would discard 57% of the sample and a whole settlement. The imputed frame is
+reported as primary and the complete-case frame as a bound, with its sample size
+given every time it is mentioned.
+
+What survives that framing: the variables whose Moran's $I$ moves least between
+the two frames are the ones to lead with, and the table above ranks them. Treat
+the complete-case column as indicative rather than as a competing estimate.
+
+## Carriage counts and cultured months {#carriage}
+
+`ESBL_pos_n` and `KP_pos_n` are counts over a number of cultured months that
+varies from 0 to 9. If sampling effort were itself spatially clustered ---
+fieldworkers returning more often to some streets --- apparent clustering in the
+counts could be an artefact of the visit schedule rather than of transmission.
+That is testable, not something to caveat and move on from.
+
+```{r carriage, purl=FALSE}
+D  <- A$clean_frame
+okm <- D$Months_tested > 0
+Wr <- listw_to_W(make_listw(xy[okm, ], "knn", k = K_DEF, style = "W"))
+car <- rbind(
+  data.frame(quantity = "Months_tested (exposure)", I = moran_I_W(D$Months_tested, W),
+             n = nrow(D)),
+  data.frame(quantity = "ESBL_pos_n (count)", I = moran_I_W(D$ESBL_pos_n, W), n = nrow(D)),
+  data.frame(quantity = "ESBL positive fraction",
+             I = moran_I_W(D$ESBL_pos_n[okm] / D$Months_tested[okm], Wr), n = sum(okm)),
+  data.frame(quantity = "KP_pos_n (count)", I = moran_I_W(D$KP_pos_n, W), n = nrow(D)),
+  data.frame(quantity = "KP positive fraction",
+             I = moran_I_W(D$KP_pos_n[okm] / D$Months_tested[okm], Wr), n = sum(okm)))
+knitr::kable(car, digits = 4, row.names = FALSE)
+```
+
+`Months_tested` shows no spatial structure, so the counts are not confounded by
+a spatially clustered visit schedule, and counts and fractions agree. Carriage
+itself shows no spatial autocorrelation on this weights matrix at this sample
+size --- which is the substantively interesting result, and the one the MGM's
+`Site` nodes should be read against.
+
+## The weights matrix
+
+Every number above is conditional on $\mathbf{W}$, so the conditioning has to be
+shown. This also quantifies the difference between `01b`'s averaged-then-
+standardised construction and `spdep`'s.
+
+```{r sens, purl=FALSE, fig.height=5.5}
+cfgs <- list(`knn k=4` = list(type = "knn", k = 4),
+             `knn k=6` = list(type = "knn", k = 6),
+             `knn k=8` = list(type = "knn", k = 8),
+             `knn k=12`= list(type = "knn", k = 12),
+             `250 m`   = list(type = "dist", d = 250),
+             `400 m`   = list(type = "dist", d = 400),
+             `IDW 400m`= list(type = "idw", d = 400, alpha = 1))
+top <- head(G$variable, 6)
+S2 <- sapply(cfgs, function(cf) sapply(top, function(v)
+  moran_I(E$X[[v]], do.call(make_listw, c(list(coords = xy), cf, list(style = "W"))))))
+S2 <- cbind(S2, `01b W` = sapply(top, function(v) moran_I_W(E$X[[v]], A$W)))
+knitr::kable(round(S2, 3), caption = "Global Moran's I under alternative weights")
+
+op <- par(mar = c(6, 4, 1, 1))
+matplot(t(S2), type = "b", pch = 16, lty = 1, xaxt = "n", col = seq_len(nrow(S2)),
+        xlab = "", ylab = "Moran's I")
+axis(1, seq_len(ncol(S2)), colnames(S2), las = 2)
+abline(h = 0, col = "grey70")
+legend("topright", rownames(S2), col = seq_len(nrow(S2)), lty = 1, pch = 16,
+       bty = "n", cex = 0.75)
+par(op)
+```
+
+---
+
+## Export and tangle
+
+```{r export, purl=FALSE}
+## The Shiny app validates this object and REFUSES one it does not recognise,
+## so the fields it checks -- and the schema stamp it compares against its own
+## BUNDLE_SCHEMA -- have to be written here too. Keep this number and the one
+## at the top of app.R in step; raise both whenever a change to the cleaning
+## scripts or to the core functions alters the numbers.
+BUNDLE_SCHEMA <- 3L
+
+saveRDS(list(X = E$X, meta = E$meta, coords = xy, lonlat = A$lonlat,
+             registry = A$registry, W_01b = A$W,
+             cov_vars = cov_vars, sp_vars = sp_vars,
+             global = G, joincounts = JC,
+             site_group = A$site_group, k = K_DEF,
+             site_labels = A$site_labels, site_encoding = A$site_encoding,
+             schema = BUNDLE_SCHEMA,
+             built = Sys.time()),
+        "mgm_spatial_bundle.rds")
+cat("wrote mgm_spatial_bundle.rds (schema", BUNDLE_SCHEMA, ") --",
+    length(cov_vars), "covariates,", length(sp_vars), "spatial variables\n")
+```
+
+The core functions are tangled out to a plain script for the app to source.
+`knitr::purl()` is deliberately not used: it only works while a knit is in
+progress (`knitr::current_input()` is `NULL` when you run chunks interactively,
+which surfaces as `'con' is not a connection`), and calling it during a knit
+re-enters `knit()` on the same file. The tangler below reads the `.Rmd` as plain
+text and behaves identically either way.
+
+```{r tangle, purl=FALSE}
+## CORE_CHUNKS is an explicit whitelist, not "everything without purl=FALSE".
+## In the combined document the cleaning, spatial and model-fitting sections
+## are ordinary chunks too, and tangling those into mgm_spatial_core.R would
+## make the app re-run the entire pipeline every time it sources the file.
+## Naming the core chunks is the only version of this rule that stays correct
+## when sections are added.
+CORE_CHUNKS <- c("libs", "expand-core", "weights-core", "estimators-core",
+                 "perm-core", "localperm-core", "fastcore", "global-core")
+
+write_core <- function(rmd, out = "mgm_spatial_core.R", keep = CORE_CHUNKS) {
+  x      <- readLines(rmd, warn = FALSE)
+  opens  <- grep("^```\\{r", x)
+  fences <- grep("^```\\s*$", x)
+  body   <- character(0)
+  seen   <- character(0)
+  for (o in opens) {
+    cl <- fences[fences > o][1]
+    if (is.na(cl)) stop("unclosed chunk at line ", o)
+    label <- trimws(sub("^```\\{r[ ,]*([^,}]*).*$", "\\1", x[o]))
+    if (!label %in% keep) next
+    seen  <- c(seen, label)
+    body  <- c(body, "", sprintf("## ---- %s ----", label), x[(o + 1):(cl - 1)])
+  }
+  missing <- setdiff(keep, seen)
+  if (length(missing))
+    stop("these core chunks were not found in ", basename(rmd), ": ",
+         paste(missing, collapse = ", "), "\n(renamed a chunk? update CORE_CHUNKS)")
+  writeLines(c(
+    "## ---------------------------------------------------------------------------",
+    "## mgm_spatial_core.R",
+    "##",
+    sprintf("## Tangled from %s on %s.", basename(rmd), format(Sys.Date())),
+    "## Edit the Rmd, not this file.",
+    "## ---------------------------------------------------------------------------",
+    body), out)
+  invisible(out)
+}
+
+rmd_file <- tryCatch(knitr::current_input(), error = function(e) NULL)
+if (is.null(rmd_file) || !nzchar(rmd_file) || !file.exists(rmd_file))
+  rmd_file <- if (file.exists("WST795_analysis.Rmd")) {
+    "WST795_analysis.Rmd"
+  } else {
+    "spatial_autocorrelation_MGM.Rmd"
+  }
+
+if (file.exists(rmd_file)) {
+  write_core(rmd_file)
+  message("wrote mgm_spatial_core.R from ", rmd_file)
+} else {
+  warning("Could not find the .Rmd in ", getwd(), ", so mgm_spatial_core.R was ",
+          "not regenerated. The shipped copy is current and the app will use it.")
+}
+```
+
+Then, from the same directory:
+
+```r
+shiny::runApp("app.R")
+```
+
+---
+
+## The Shiny app
+
+```{r app-listing, eval=FALSE, purl=FALSE, code=readLines("app.R")}
+```
+
+---
+
+## Notes for the write-up
+
+1. Analysis runs on `AIARMS_mgm_spatial.rds`: 162 households, the same rows and recodes as the MGM. Two records 62 km from the rest were dropped by `01b` (`DROP_OUTLIERS`, `OUTLIER_KM = 10`); confirm against the field records whether that is a geocoding error or a genuine second site.
+2. Nodes the registry declares as `"c"` with `level > 2` are expanded into level indicators, `Site` included --- so each of ARUE, ARUF, ARUL, ARUO, ARUS, ARUT and ARUU is tested as itself, under its own code, never as a contrast against a reference site. Moran's I on the 1..m integer codes would be an artefact of an arbitrary numbering that `mgm` explicitly treats as unordered. Whole-variable behaviour is covered by multi-colour join counts on binary weights.
+3. `Site_*` and `NN_density` are excluded from the covariate results as spatial by construction, and reported separately as positive controls and as a between-settlement block. The control range is printed, not asserted; `Site_ARUF` (n = 3) sits well below the others and is a weak control.
+4. Weights: 8 nearest neighbours, row-standardised, $w_{ii} = 0$, on `01b`'s equirectangular metric coordinates (verified against EPSG:32736 to within 4.93 m over a 2286 m extent). Section 2.1 of the report must describe *this*, not a critical-distance band --- a distance band chosen at the first correlogram peak leaves 14-28 households with no neighbours on these data. `01b`'s own averaged-then-standardised $\mathbf{W}$ is reported alongside.
+5. Inference is by permutation throughout, using the doubled smaller-tail two-sided $p$-value, because most analysis variables are binary indicators or small counts for which the normal approximation to the randomisation variance is unreliable at $n = 162$.
+6. Benjamini--Hochberg within each family. The family sizes are computed, not hard-coded: with `EC_pos_n` in the registry there are 43 univariate tests and 903 pairs (42 and 861 in the older build that excluded it). Two-sided doubled-tail $p$-values floor at $2/(B+1)$, so at `nsim = 19999` no single pair clears the rank-1 BH threshold; rejections come from ties at the floor. No LISA site survives correction at any replicate count; the local map is exploratory.
+7. Complete-case deletion is **not** a viable sensitivity analysis once blank survey items are treated as non-responses: it retains 70 of 164 households, rebuilds the neighbour graph from a third of the sample, and loses the `ARUF` site entirely. Report the imputed frame as primary and the complete-case frame as a bound, always with its sample size attached; differences between them are sample composition, not imputation bias. `Education_3` separately depends on whether a sub-matric certificate counts as tertiary (see Section 8); report that sensitivity explicitly.
+8. `Months_tested` shows no spatial structure, so carriage counts are not confounded by a spatially clustered visit schedule.
+9. Households are the unit of analysis and every covariate is household-level, so no ecological-inference problem arises --- unlike a sewershed-level analysis, where @talleb2025socio and @hill2023using show the population-to-catchment mapping becomes the dominant error source.
 
 
-```{r Spatial Plotting}  
-library(sf)         
-library(readxl)     
-library(ggplot2)    
-library(dplyr)      
-library(sampling)   
-library(viridis)    
-library(grid)
-library(RColorBrewer)
-library(scico)  
-setwd("C:/Users/Marquis/Desktop/Honours Research")
-wards_sa <- st_read("gadm41_ZAF_4.shp") 
-wards_kzn <- wards_sa %>% filter(NAME_1 == "KwaZulu-Natal") 
-ggplot() +  
-  geom_sf(data =wards_kzn ,fill = "grey90",colour = "black")
-``` 
+---
+
+

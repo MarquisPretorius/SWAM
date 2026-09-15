@@ -455,39 +455,6 @@
         "RemoteSha": "1.4-8"
       }
     },
-    "askpass": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "askpass",
-        "Type": "Package",
-        "Title": "Password Entry Utilities for R, Git, and SSH",
-        "Version": "1.2.1",
-        "Authors@R": "person(\"Jeroen\", \"Ooms\", role = c(\"aut\", \"cre\"), \n    email = \"jeroenooms@gmail.com\", comment = c(ORCID = \"0000-0002-4035-0289\"))",
-        "Description": "Cross-platform utilities for prompting the user for credentials or a \n    passphrase, for example to authenticate with a server or read a protected key.\n    Includes native programs for MacOS and Windows, hence no 'tcltk' is required. \n    Password entry can be invoked in two different ways: directly from R via the \n    askpass() function, or indirectly as password-entry back-end for 'ssh-agent' \n    or 'git-credential' via the SSH_ASKPASS and GIT_ASKPASS environment variables.\n    Thereby the user can be prompted for credentials or a passphrase if needed \n    when R calls out to git or ssh.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://r-lib.r-universe.dev/askpass",
-        "BugReports": "https://github.com/r-lib/askpass/issues",
-        "Encoding": "UTF-8",
-        "Imports": "sys (>= 2.1)",
-        "RoxygenNote": "7.2.3",
-        "Suggests": "testthat",
-        "Language": "en-US",
-        "NeedsCompilation": "yes",
-        "Packaged": "2024-10-03 14:12:09 UTC; jeroen",
-        "Author": "Jeroen Ooms [aut, cre] (<https://orcid.org/0000-0002-4035-0289>)",
-        "Maintainer": "Jeroen Ooms <jeroenooms@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2024-10-04 07:20:03 UTC",
-        "Built": "R 4.5.2; x86_64-w64-mingw32; 2026-03-04 02:41:02 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "askpass",
-        "RemoteRef": "askpass",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "1.2.1"
-      }
-    },
     "backports": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -547,75 +514,6 @@
         "RemoteRef": "base64enc",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "0.1-6"
-      }
-    },
-    "bit": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "bit",
-        "Title": "Classes and Methods for Fast Memory-Efficient Boolean Selections",
-        "Version": "4.6.0",
-        "Authors@R": "c(\n    person(\"Michael\", \"Chirico\", email = \"MichaelChirico4@gmail.com\", role = c(\"aut\", \"cre\")),\n    person(\"Jens\", \"Oehlschlägel\", role = \"aut\"),\n    person(\"Brian\", \"Ripley\", role = \"ctb\")\n  )",
-        "Depends": "R (>= 3.4.0)",
-        "Suggests": "testthat (>= 3.0.0), roxygen2, knitr, markdown, rmarkdown,\nmicrobenchmark, bit64 (>= 4.0.0), ff (>= 4.0.0)",
-        "Description": "Provided are classes for boolean and skewed boolean vectors,\n    fast boolean methods, fast unique and non-unique integer sorting,\n    fast set operations on sorted and unsorted sets of integers, and\n    foundations for ff (range index, compression, chunked processing).",
-        "License": "GPL-2 | GPL-3",
-        "LazyLoad": "yes",
-        "ByteCompile": "yes",
-        "Encoding": "UTF-8",
-        "URL": "https://github.com/r-lib/bit",
-        "VignetteBuilder": "knitr, rmarkdown",
-        "RoxygenNote": "7.3.2",
-        "Config/testthat/edition": "3",
-        "NeedsCompilation": "yes",
-        "Packaged": "2025-03-05 07:18:45 UTC; michael",
-        "Author": "Michael Chirico [aut, cre],\n  Jens Oehlschlägel [aut],\n  Brian Ripley [ctb]",
-        "Maintainer": "Michael Chirico <MichaelChirico4@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-03-06 10:50:01 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-03-18 02:52:49 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "bit",
-        "RemoteRef": "bit",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "4.6.0"
-      }
-    },
-    "bit64": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "bit64",
-        "Title": "A S3 Class for Vectors of 64bit Integers",
-        "Version": "4.6.0-1",
-        "Authors@R": "c(\n    person(\"Michael\", \"Chirico\", email = \"michaelchirico4@gmail.com\", role = c(\"aut\", \"cre\")),\n    person(\"Jens\", \"Oehlschlägel\", role = \"aut\"),\n    person(\"Leonardo\", \"Silvestri\", role = \"ctb\"),\n    person(\"Ofek\", \"Shilon\", role = \"ctb\")\n  )",
-        "Depends": "R (>= 3.4.0), bit (>= 4.0.0)",
-        "Description": "\n  Package 'bit64' provides serializable S3 atomic 64bit (signed) integers.\n  These are useful for handling database keys and exact counting in +-2^63.\n  WARNING: do not use them as replacement for 32bit integers, integer64 are not\n  supported for subscripting by R-core and they have different semantics when\n  combined with double, e.g. integer64 + double => integer64.\n  Class integer64 can be used in vectors, matrices, arrays and data.frames.\n  Methods are available for coercion from and to logicals, integers, doubles,\n  characters and factors as well as many elementwise and summary functions.\n  Many fast algorithmic operations such as 'match' and 'order' support inter-\n  active data exploration and manipulation and optionally leverage caching.",
-        "License": "GPL-2 | GPL-3",
-        "LazyLoad": "yes",
-        "ByteCompile": "yes",
-        "URL": "https://github.com/r-lib/bit64",
-        "Encoding": "UTF-8",
-        "Imports": "graphics, methods, stats, utils",
-        "Suggests": "testthat (>= 3.0.3), withr",
-        "Config/testthat/edition": "3",
-        "Config/needs/development": "testthat",
-        "RoxygenNote": "7.3.2",
-        "NeedsCompilation": "yes",
-        "Packaged": "2025-01-16 14:04:20 UTC; michael",
-        "Author": "Michael Chirico [aut, cre],\n  Jens Oehlschlägel [aut],\n  Leonardo Silvestri [ctb],\n  Ofek Shilon [ctb]",
-        "Maintainer": "Michael Chirico <michaelchirico4@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-01-16 16:00:07 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-03-18 03:52:53 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "bit64",
-        "RemoteRef": "bit64",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "4.6.0-1"
       }
     },
     "boot": {
@@ -910,40 +808,6 @@
         "RemoteSha": "3.6.5"
       }
     },
-    "clipr": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Type": "Package",
-        "Package": "clipr",
-        "Title": "Read and Write from the System Clipboard",
-        "Version": "0.8.0",
-        "Authors@R": "c(\n    person(\"Matthew\", \"Lincoln\", , \"matthew.d.lincoln@gmail.com\", role = c(\"aut\", \"cre\"),\n           comment = c(ORCID = \"0000-0002-4387-3384\")),\n    person(\"Louis\", \"Maddox\", role = \"ctb\"),\n    person(\"Steve\", \"Simpson\", role = \"ctb\"),\n    person(\"Jennifer\", \"Bryan\", role = \"ctb\")\n  )",
-        "Description": "Simple utility functions to read from and write to\n    the Windows, OS X, and X11 clipboards.",
-        "License": "GPL-3",
-        "URL": "https://github.com/mdlincoln/clipr,\nhttp://matthewlincoln.net/clipr/",
-        "BugReports": "https://github.com/mdlincoln/clipr/issues",
-        "Imports": "utils",
-        "Suggests": "covr, knitr, rmarkdown, rstudioapi (>= 0.5), testthat (>=\n2.0.0)",
-        "VignetteBuilder": "knitr",
-        "Encoding": "UTF-8",
-        "Language": "en-US",
-        "RoxygenNote": "7.1.2",
-        "SystemRequirements": "xclip (https://github.com/astrand/xclip) or xsel\n(http://www.vergenet.net/~conrad/software/xsel/) for accessing\nthe X11 clipboard, or wl-clipboard\n(https://github.com/bugaevc/wl-clipboard) for systems using\nWayland.",
-        "NeedsCompilation": "no",
-        "Packaged": "2022-02-19 02:20:21 UTC; mlincoln",
-        "Author": "Matthew Lincoln [aut, cre] (<https://orcid.org/0000-0002-4387-3384>),\n  Louis Maddox [ctb],\n  Steve Simpson [ctb],\n  Jennifer Bryan [ctb]",
-        "Maintainer": "Matthew Lincoln <matthew.d.lincoln@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2022-02-22 00:58:45 UTC",
-        "Built": "R 4.5.3; ; 2026-03-18 02:52:31 UTC; windows",
-        "RemoteType": "standard",
-        "RemotePkgRef": "clipr",
-        "RemoteRef": "clipr",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "0.8.0"
-      }
-    },
     "cluster": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -1192,41 +1056,6 @@
         "RemoteSha": "1.2.2"
       }
     },
-    "curl": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "curl",
-        "Type": "Package",
-        "Title": "A Modern and Flexible Web Client for R",
-        "Version": "7.0.0",
-        "Authors@R": "c(\n    person(\"Jeroen\", \"Ooms\", role = c(\"aut\", \"cre\"), email = \"jeroenooms@gmail.com\",\n      comment = c(ORCID = \"0000-0002-4035-0289\")),\n    person(\"Hadley\", \"Wickham\", role = \"ctb\"),\n    person(\"Posit Software, PBC\", role = \"cph\"))",
-        "Description": "Bindings to 'libcurl' <https://curl.se/libcurl/> for performing fully\n    configurable HTTP/FTP requests where responses can be processed in memory, on\n    disk, or streaming via the callback or connection interfaces. Some knowledge\n    of 'libcurl' is recommended; for a more-user-friendly web client see the \n    'httr2' package which builds on this package with http specific tools and logic.",
-        "License": "MIT + file LICENSE",
-        "SystemRequirements": "libcurl (>= 7.73): libcurl-devel (rpm) or\nlibcurl4-openssl-dev (deb)",
-        "URL": "https://jeroen.r-universe.dev/curl",
-        "BugReports": "https://github.com/jeroen/curl/issues",
-        "Suggests": "spelling, testthat (>= 1.0.0), knitr, jsonlite, later,\nrmarkdown, httpuv (>= 1.4.4), webutils",
-        "VignetteBuilder": "knitr",
-        "Depends": "R (>= 3.0.0)",
-        "RoxygenNote": "7.3.2",
-        "Encoding": "UTF-8",
-        "Language": "en-US",
-        "NeedsCompilation": "yes",
-        "Packaged": "2025-08-19 10:05:57 UTC; jeroen",
-        "Author": "Jeroen Ooms [aut, cre] (ORCID: <https://orcid.org/0000-0002-4035-0289>),\n  Hadley Wickham [ctb],\n  Posit Software, PBC [cph]",
-        "Maintainer": "Jeroen Ooms <jeroenooms@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-08-19 22:40:02 UTC",
-        "Built": "R 4.5.2; x86_64-w64-mingw32; 2026-02-18 01:42:37 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "curl",
-        "RemoteRef": "curl",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "7.0.0"
-      }
-    },
     "data.table": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -1452,40 +1281,6 @@
         "RemoteRef": "farver",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "2.1.2"
-      }
-    },
-    "fastDummies": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "fastDummies",
-        "Type": "Package",
-        "Title": "Fast Creation of Dummy (Binary) Columns and Rows from\nCategorical Variables",
-        "Version": "1.7.6",
-        "Authors@R": "c(\n    person(\"Jacob\", \"Kaplan\", email = \"jkkaplan6@gmail.com\", role = c(\"aut\", \"cre\"),\n    comment = c(ORCID = \"0000-0002-0601-0387\")), \n    person(\"Benjamin\", \"Schlegel\", email = \"kontakt@benjaminschlegl.ch\", role =  \"ctb\"))",
-        "Description": "Creates dummy columns from columns that have categorical variables (character or factor types). You can also specify which columns to make dummies out of, or which columns to ignore. Also creates dummy rows from character, factor, and Date columns. This package provides a significant speed increase from creating dummy variables through model.matrix().",
-        "Depends": "R (>= 2.10)",
-        "Imports": "data.table, tibble, stringr",
-        "License": "MIT + file LICENSE",
-        "Encoding": "UTF-8",
-        "URL": "https://github.com/jacobkap/fastDummies,\nhttps://jacobkap.github.io/fastDummies/",
-        "BugReports": "https://github.com/jacobkap/fastDummies/issues",
-        "RoxygenNote": "7.3.2",
-        "Suggests": "testthat (>= 2.1.0), knitr, rmarkdown, covr, spelling, dplyr",
-        "VignetteBuilder": "knitr",
-        "Language": "en-US",
-        "NeedsCompilation": "no",
-        "Packaged": "2026-04-22 15:26:34 UTC; jkkap",
-        "Author": "Jacob Kaplan [aut, cre] (ORCID:\n    <https://orcid.org/0000-0002-0601-0387>),\n  Benjamin Schlegel [ctb]",
-        "Maintainer": "Jacob Kaplan <jkkaplan6@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-04-22 16:10:02 UTC",
-        "Built": "R 4.5.3; ; 2026-08-17 03:02:23 UTC; windows",
-        "RemoteType": "standard",
-        "RemotePkgRef": "fastDummies",
-        "RemoteRef": "fastDummies",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha.Version": "1.7.6"
       }
     },
     "fastmap": {
@@ -2155,39 +1950,6 @@
         "RemoteRef": "httpuv",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "1.6.17"
-      }
-    },
-    "httr": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "httr",
-        "Title": "Tools for Working with URLs and HTTP",
-        "Version": "1.4.8",
-        "Authors@R": "c(\n    person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = c(\"aut\", \"cre\")),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"))\n  )",
-        "Description": "Useful tools for working with HTTP organised by HTTP verbs\n    (GET(), POST(), etc). Configuration functions make it easy to control\n    additional request components (authenticate(), add_headers() and so\n    on).",
-        "License": "MIT + file LICENSE",
-        "URL": "https://httr.r-lib.org/, https://github.com/r-lib/httr",
-        "BugReports": "https://github.com/r-lib/httr/issues",
-        "Depends": "R (>= 3.6)",
-        "Imports": "curl (>= 5.1.0), jsonlite, mime, openssl (>= 0.8), R6",
-        "Suggests": "covr, httpuv, jpeg, knitr, png, readr, rmarkdown, testthat\n(>= 0.8.0), xml2",
-        "VignetteBuilder": "knitr",
-        "Config/Needs/website": "tidyverse/tidytemplate",
-        "Encoding": "UTF-8",
-        "RoxygenNote": "7.3.3",
-        "NeedsCompilation": "no",
-        "Packaged": "2026-02-13 13:25:45 UTC; hadleywickham",
-        "Author": "Hadley Wickham [aut, cre],\n  Posit Software, PBC [cph, fnd]",
-        "Maintainer": "Hadley Wickham <hadley@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-02-13 16:20:15 UTC",
-        "Built": "R 4.5.3; ; 2026-03-18 04:21:03 UTC; windows",
-        "RemoteType": "standard",
-        "RemotePkgRef": "httr",
-        "RemoteRef": "httr",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "1.4.8"
       }
     },
     "igraph": {
@@ -2960,40 +2722,6 @@
         "RemoteSha": "2016.8-1.1"
       }
     },
-    "openssl": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "openssl",
-        "Type": "Package",
-        "Title": "Toolkit for Encryption, Signatures and Certificates Based on\nOpenSSL",
-        "Version": "2.4.2",
-        "Authors@R": "c(person(\"Jeroen\", \"Ooms\", role = c(\"aut\", \"cre\"), email = \"jeroenooms@gmail.com\",\n    comment = c(ORCID = \"0000-0002-4035-0289\")),\n    person(\"Oliver\", \"Keyes\", role = \"ctb\"))",
-        "Description": "Bindings to OpenSSL libssl and libcrypto, plus custom SSH key parsers.\n    Supports RSA, DSA and EC curves P-256, P-384, P-521, and curve25519. Cryptographic\n    signatures can either be created and verified manually or via x509 certificates. \n    AES can be used in cbc, ctr or gcm mode for symmetric encryption; RSA for asymmetric\n    (public key) encryption or EC for Diffie Hellman. High-level envelope functions \n    combine RSA and AES for encrypting arbitrary sized data. Other utilities include key\n    generators, hash functions (md5, sha1, sha256, etc), base64 encoder, a secure random\n    number generator, and 'bignum' math methods for manually performing crypto \n    calculations on large multibyte integers.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://jeroen.r-universe.dev/openssl",
-        "BugReports": "https://github.com/jeroen/openssl/issues",
-        "SystemRequirements": "OpenSSL >= 1.0.2",
-        "VignetteBuilder": "knitr",
-        "Imports": "askpass",
-        "Suggests": "curl, testthat (>= 2.1.0), digest, knitr, rmarkdown,\njsonlite, jose, sodium",
-        "Encoding": "UTF-8",
-        "Config/roxygen2/version": "8.0.0",
-        "NeedsCompilation": "yes",
-        "Packaged": "2026-06-09 10:51:42 UTC; jeroen",
-        "Author": "Jeroen Ooms [aut, cre] (ORCID: <https://orcid.org/0000-0002-4035-0289>),\n  Oliver Keyes [ctb]",
-        "Maintainer": "Jeroen Ooms <jeroenooms@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-06-09 13:30:02 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-09-01 11:42:28 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "openssl",
-        "RemoteRef": "openssl",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha.Version": "2.4.2"
-      }
-    },
     "otel": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -3149,39 +2877,6 @@
         "RemoteRef": "pkgconfig",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "2.0.3"
-      }
-    },
-    "plotly": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "plotly",
-        "Title": "Create Interactive Web Graphics via 'plotly.js'",
-        "Version": "4.12.0",
-        "Authors@R": "c(person(\"Carson\", \"Sievert\", role = c(\"aut\", \"cre\"),\n    email = \"cpsievert1@gmail.com\", comment = c(ORCID = \"0000-0002-4958-2844\")),\n    person(\"Chris\", \"Parmer\", role = \"aut\",\n    email = \"chris@plot.ly\"),\n    person(\"Toby\", \"Hocking\", role = \"aut\",\n    email = \"tdhock5@gmail.com\"),\n    person(\"Scott\", \"Chamberlain\", role = \"aut\",\n    email = \"myrmecocystus@gmail.com\"),\n    person(\"Karthik\", \"Ram\", role = \"aut\",\n    email = \"karthik.ram@gmail.com\"),\n    person(\"Marianne\", \"Corvellec\", role = \"aut\",\n    email = \"marianne.corvellec@igdore.org\", comment = c(ORCID = \"0000-0002-1994-3581\")),\n    person(\"Pedro\", \"Despouy\", role = \"aut\",\n    email = \"pedro@plot.ly\"),\n    person(\"Salim\", \"Brüggemann\", role = \"ctb\",\n    email = \"salim-b@pm.me\", comment = c(ORCID = \"0000-0002-5329-5987\")),\n    person(\"Plotly Technologies Inc.\", role = \"cph\"))",
-        "License": "MIT + file LICENSE",
-        "Description": "Create interactive web graphics from 'ggplot2' graphs and/or a custom interface to the (MIT-licensed) JavaScript library 'plotly.js' inspired by the grammar of graphics.",
-        "URL": "https://plotly-r.com, https://github.com/plotly/plotly.R,\nhttps://plotly.com/r/",
-        "BugReports": "https://github.com/plotly/plotly.R/issues",
-        "Depends": "R (>= 3.5.0), ggplot2 (>= 3.0.0)",
-        "Imports": "tools, scales, httr (>= 1.3.0), jsonlite (>= 1.6), magrittr,\ndigest, viridisLite, base64enc, htmltools (>= 0.3.6),\nhtmlwidgets (>= 1.5.2.9001), tidyr (>= 1.0.0), RColorBrewer,\ndplyr, vctrs, tibble, lazyeval (>= 0.2.0), rlang (>= 1.0.0),\ncrosstalk, purrr, data.table, promises",
-        "Suggests": "MASS, maps, hexbin, ggthemes, GGally, ggalluvial, testthat,\nknitr, shiny (>= 1.1.0), shinytest2, curl, rmarkdown, Cairo,\nbroom, webshot, listviewer, dendextend, sf, png, IRdisplay,\nprocessx, plotlyGeoAssets, forcats, withr, palmerpenguins,\nrversions, reticulate, rsvg, ggridges",
-        "LazyData": "true",
-        "RoxygenNote": "7.3.3",
-        "Encoding": "UTF-8",
-        "Config/Needs/check": "tidyverse/ggplot2, ggobi/GGally, rcmdcheck,\ndevtools, reshape2, s2",
-        "NeedsCompilation": "no",
-        "Packaged": "2026-01-24 00:53:27 UTC; cpsievert",
-        "Author": "Carson Sievert [aut, cre] (ORCID:\n    <https://orcid.org/0000-0002-4958-2844>),\n  Chris Parmer [aut],\n  Toby Hocking [aut],\n  Scott Chamberlain [aut],\n  Karthik Ram [aut],\n  Marianne Corvellec [aut] (ORCID:\n    <https://orcid.org/0000-0002-1994-3581>),\n  Pedro Despouy [aut],\n  Salim Brüggemann [ctb] (ORCID: <https://orcid.org/0000-0002-5329-5987>),\n  Plotly Technologies Inc. [cph]",
-        "Maintainer": "Carson Sievert <cpsievert1@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-01-24 07:50:02 UTC",
-        "Built": "R 4.5.3; ; 2026-05-04 19:35:41 UTC; windows",
-        "RemoteType": "standard",
-        "RemotePkgRef": "plotly",
-        "RemoteRef": "plotly",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "4.12.0"
       }
     },
     "plyr": {
@@ -3406,45 +3101,6 @@
         "RemoteSha.Version": "2.6.5"
       }
     },
-    "purrr": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "purrr",
-        "Title": "Functional Programming Tools",
-        "Version": "1.2.1",
-        "Authors@R": "c(\n    person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = c(\"aut\", \"cre\"),\n           comment = c(ORCID = \"0000-0003-4757-117X\")),\n    person(\"Lionel\", \"Henry\", , \"lionel@posit.co\", role = \"aut\"),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"),\n           comment = c(ROR = \"https://ror.org/03wc8by49\"))\n  )",
-        "Description": "A complete and consistent functional programming toolkit for\n    R.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://purrr.tidyverse.org/, https://github.com/tidyverse/purrr",
-        "BugReports": "https://github.com/tidyverse/purrr/issues",
-        "Depends": "R (>= 4.1)",
-        "Imports": "cli (>= 3.6.1), lifecycle (>= 1.0.3), magrittr (>= 1.5.0),\nrlang (>= 1.1.1), vctrs (>= 0.6.3)",
-        "Suggests": "carrier (>= 0.3.0), covr, dplyr (>= 0.7.8), httr, knitr,\nlubridate, mirai (>= 2.5.1), rmarkdown, testthat (>= 3.0.0),\ntibble, tidyselect",
-        "LinkingTo": "cli",
-        "VignetteBuilder": "knitr",
-        "Biarch": "true",
-        "Config/build/compilation-database": "true",
-        "Config/Needs/website": "tidyverse/tidytemplate, tidyr",
-        "Config/testthat/edition": "3",
-        "Config/testthat/parallel": "TRUE",
-        "Encoding": "UTF-8",
-        "RoxygenNote": "7.3.3",
-        "NeedsCompilation": "yes",
-        "Packaged": "2026-01-08 20:56:46 UTC; hadleywickham",
-        "Author": "Hadley Wickham [aut, cre] (ORCID:\n    <https://orcid.org/0000-0003-4757-117X>),\n  Lionel Henry [aut],\n  Posit Software, PBC [cph, fnd] (ROR: <https://ror.org/03wc8by49>)",
-        "Maintainer": "Hadley Wickham <hadley@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-01-09 10:30:02 UTC",
-        "Built": "R 4.5.2; x86_64-w64-mingw32; 2026-02-18 03:00:08 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "purrr",
-        "RemoteRef": "purrr",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "1.2.1"
-      }
-    },
     "qgraph": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -3572,45 +3228,6 @@
         "RemoteRef": "raster",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "3.6-32"
-      }
-    },
-    "readr": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "readr",
-        "Title": "Read Rectangular Text Data",
-        "Version": "2.2.0",
-        "Authors@R": "c(\n    person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = \"aut\"),\n    person(\"Jim\", \"Hester\", role = \"aut\"),\n    person(\"Romain\", \"Francois\", role = \"ctb\"),\n    person(\"Jennifer\", \"Bryan\", , \"jenny@posit.co\", role = c(\"aut\", \"cre\"),\n           comment = c(ORCID = \"0000-0002-6983-2759\")),\n    person(\"Shelby\", \"Bearrows\", role = \"ctb\"),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"),\n           comment = c(ROR = \"03wc8by49\")),\n    person(\"https://github.com/mandreyel/\", role = \"cph\",\n           comment = \"mio library\"),\n    person(\"Jukka\", \"Jylänki\", role = c(\"ctb\", \"cph\"),\n           comment = \"grisu3 implementation\"),\n    person(\"Mikkel\", \"Jørgensen\", role = c(\"ctb\", \"cph\"),\n           comment = \"grisu3 implementation\")\n  )",
-        "Description": "The goal of 'readr' is to provide a fast and friendly way to\n    read rectangular data (like 'csv', 'tsv', and 'fwf').  It is designed\n    to flexibly parse many types of data found in the wild, while still\n    cleanly failing when data unexpectedly changes.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://readr.tidyverse.org, https://github.com/tidyverse/readr",
-        "BugReports": "https://github.com/tidyverse/readr/issues",
-        "Depends": "R (>= 4.1)",
-        "Imports": "cli, clipr, crayon, glue, hms (>= 0.4.1), lifecycle, methods,\nR6, rlang, tibble, utils, vroom (>= 1.7.0), withr",
-        "Suggests": "covr, curl, datasets, knitr, rmarkdown, spelling, stringi,\ntestthat (>= 3.2.0), tzdb (>= 0.1.1), waldo, xml2",
-        "LinkingTo": "cpp11, tzdb (>= 0.1.1)",
-        "VignetteBuilder": "knitr",
-        "Config/Needs/website": "tidyverse, tidyverse/tidytemplate",
-        "Config/testthat/edition": "3",
-        "Config/testthat/parallel": "false",
-        "Config/usethis/last-upkeep": "2025-11-14",
-        "Encoding": "UTF-8",
-        "Language": "en-US",
-        "RoxygenNote": "7.3.3",
-        "NeedsCompilation": "yes",
-        "Packaged": "2026-02-19 07:07:31 UTC; jenny",
-        "Author": "Hadley Wickham [aut],\n  Jim Hester [aut],\n  Romain Francois [ctb],\n  Jennifer Bryan [aut, cre] (ORCID:\n    <https://orcid.org/0000-0002-6983-2759>),\n  Shelby Bearrows [ctb],\n  Posit Software, PBC [cph, fnd] (ROR: <https://ror.org/03wc8by49>),\n  https://github.com/mandreyel/ [cph] (mio library),\n  Jukka Jylänki [ctb, cph] (grisu3 implementation),\n  Mikkel Jørgensen [ctb, cph] (grisu3 implementation)",
-        "Maintainer": "Jennifer Bryan <jenny@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-02-19 18:10:02 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-03-18 05:13:30 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "readr",
-        "RemoteRef": "readr",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "2.2.0"
       }
     },
     "readxl": {
@@ -4339,38 +3956,6 @@
         "Archs": "x64"
       }
     },
-    "sys": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "sys",
-        "Type": "Package",
-        "Title": "Powerful and Reliable Tools for Running System Commands in R",
-        "Version": "3.4.3",
-        "Authors@R": "c(person(\"Jeroen\", \"Ooms\", role = c(\"aut\", \"cre\"), \n      email = \"jeroenooms@gmail.com\", comment = c(ORCID = \"0000-0002-4035-0289\")),\n    person(\"Gábor\", \"Csárdi\", , \"csardi.gabor@gmail.com\", role = \"ctb\"))",
-        "Description": "Drop-in replacements for the base system2() function with fine control\n    and consistent behavior across platforms. Supports clean interruption, timeout, \n    background tasks, and streaming STDIN / STDOUT / STDERR over binary or text \n    connections. Arguments on Windows automatically get encoded and quoted to work \n    on different locales.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://jeroen.r-universe.dev/sys",
-        "BugReports": "https://github.com/jeroen/sys/issues",
-        "Encoding": "UTF-8",
-        "RoxygenNote": "7.1.1",
-        "Suggests": "unix (>= 1.4), spelling, testthat",
-        "Language": "en-US",
-        "NeedsCompilation": "yes",
-        "Packaged": "2024-10-03 14:13:17 UTC; jeroen",
-        "Author": "Jeroen Ooms [aut, cre] (<https://orcid.org/0000-0002-4035-0289>),\n  Gábor Csárdi [ctb]",
-        "Maintainer": "Jeroen Ooms <jeroenooms@gmail.com>",
-        "Repository": "CRAN",
-        "Date/Publication": "2024-10-04 09:40:02 UTC",
-        "Built": "R 4.5.2; x86_64-w64-mingw32; 2026-03-04 01:53:13 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "sys",
-        "RemoteRef": "sys",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "3.4.3"
-      }
-    },
     "terra": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -4449,44 +4034,6 @@
         "RemoteSha": "3.3.1"
       }
     },
-    "tidyr": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "tidyr",
-        "Title": "Tidy Messy Data",
-        "Version": "1.3.2",
-        "Authors@R": "c(\n    person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = c(\"aut\", \"cre\")),\n    person(\"Davis\", \"Vaughan\", , \"davis@posit.co\", role = \"aut\"),\n    person(\"Maximilian\", \"Girlich\", role = \"aut\"),\n    person(\"Kevin\", \"Ushey\", , \"kevin@posit.co\", role = \"ctb\"),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"))\n  )",
-        "Description": "Tools to help to create tidy data, where each column is a\n    variable, each row is an observation, and each cell contains a single\n    value. 'tidyr' contains tools for changing the shape (pivoting) and\n    hierarchy (nesting and 'unnesting') of a dataset, turning deeply\n    nested lists into rectangular data frames ('rectangling'), and\n    extracting values out of string columns. It also includes tools for\n    working with missing values (both implicit and explicit).",
-        "License": "MIT + file LICENSE",
-        "URL": "https://tidyr.tidyverse.org, https://github.com/tidyverse/tidyr",
-        "BugReports": "https://github.com/tidyverse/tidyr/issues",
-        "Depends": "R (>= 4.1.0)",
-        "Imports": "cli (>= 3.4.1), dplyr (>= 1.1.0), glue, lifecycle (>= 1.0.3),\nmagrittr, purrr (>= 1.0.1), rlang (>= 1.1.1), stringr (>=\n1.5.0), tibble (>= 2.1.1), tidyselect (>= 1.2.1), utils, vctrs\n(>= 0.5.2)",
-        "Suggests": "covr, data.table, knitr, readr, repurrrsive (>= 1.1.0),\nrmarkdown, testthat (>= 3.0.0)",
-        "LinkingTo": "cpp11 (>= 0.4.0)",
-        "VignetteBuilder": "knitr",
-        "Config/build/compilation-database": "true",
-        "Config/Needs/website": "tidyverse/tidytemplate",
-        "Config/testthat/edition": "3",
-        "Encoding": "UTF-8",
-        "LazyData": "true",
-        "RoxygenNote": "7.3.3",
-        "NeedsCompilation": "yes",
-        "Packaged": "2025-12-17 23:35:11 UTC; hadleywickham",
-        "Author": "Hadley Wickham [aut, cre],\n  Davis Vaughan [aut],\n  Maximilian Girlich [aut],\n  Kevin Ushey [ctb],\n  Posit Software, PBC [cph, fnd]",
-        "Maintainer": "Hadley Wickham <hadley@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-12-19 09:20:02 UTC",
-        "Built": "R 4.5.2; x86_64-w64-mingw32; 2026-02-18 03:49:13 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "tidyr",
-        "RemoteRef": "tidyr",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "1.3.2"
-      }
-    },
     "tidyselect": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -4551,41 +4098,6 @@
         "RemoteRef": "tinytex",
         "RemoteRepos": "https://cran.rstudio.com",
         "RemoteSha": "0.58"
-      }
-    },
-    "tzdb": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "tzdb",
-        "Title": "Time Zone Database Information",
-        "Version": "0.5.0",
-        "Authors@R": "c(\n    person(\"Davis\", \"Vaughan\", , \"davis@posit.co\", role = c(\"aut\", \"cre\")),\n    person(\"Howard\", \"Hinnant\", role = \"cph\",\n           comment = \"Author of the included date library\"),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"))\n  )",
-        "Description": "Provides an up-to-date copy of the Internet Assigned Numbers\n    Authority (IANA) Time Zone Database. It is updated periodically to\n    reflect changes made by political bodies to time zone boundaries, UTC\n    offsets, and daylight saving time rules. Additionally, this package\n    provides a C++ interface for working with the 'date' library. 'date'\n    provides comprehensive support for working with dates and date-times,\n    which this package exposes to make it easier for other R packages to\n    utilize. Headers are provided for calendar specific calculations,\n    along with a limited interface for time zone manipulations.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://tzdb.r-lib.org, https://github.com/r-lib/tzdb",
-        "BugReports": "https://github.com/r-lib/tzdb/issues",
-        "Depends": "R (>= 4.0.0)",
-        "Suggests": "covr, testthat (>= 3.0.0)",
-        "LinkingTo": "cpp11 (>= 0.5.2)",
-        "Biarch": "yes",
-        "Config/Needs/website": "tidyverse/tidytemplate",
-        "Config/testthat/edition": "3",
-        "Encoding": "UTF-8",
-        "RoxygenNote": "7.3.2",
-        "NeedsCompilation": "yes",
-        "Packaged": "2025-03-14 18:41:13 UTC; davis",
-        "Author": "Davis Vaughan [aut, cre],\n  Howard Hinnant [cph] (Author of the included date library),\n  Posit Software, PBC [cph, fnd]",
-        "Maintainer": "Davis Vaughan <davis@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-03-15 22:50:02 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-03-18 02:52:49 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "tzdb",
-        "RemoteRef": "tzdb",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "0.5.0"
       }
     },
     "units": {
@@ -4762,79 +4274,6 @@
         "RemoteSha": "0.4.3"
       }
     },
-    "visNetwork": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "visNetwork",
-        "Title": "Network Visualization using 'vis.js' Library",
-        "Version": "2.1.4",
-        "Authors@R": "c(\n    person(family = \"Almende B.V. and Contributors\", role = c(\"aut\", \"cph\"),\n       comment = \"vis.js library in htmlwidgets/lib, https://visjs.org/, https://github.com/visjs/vis-network\"),\n    person(\"Benoit\", \"Thieurmel\", role = c(\"aut\", \"cre\"),\n       comment = \"R interface\", email = \"bthieurmel@gmail.com\")\n    )",
-        "Maintainer": "Benoit Thieurmel <bthieurmel@gmail.com>",
-        "Description": "Provides an R interface to the 'vis.js' JavaScript charting\n    library. It allows an interactive visualization of networks.",
-        "BugReports": "https://github.com/datastorm-open/visNetwork/issues",
-        "URL": "https://datastorm-open.github.io/visNetwork/",
-        "Depends": "R (>= 3.0)",
-        "Imports": "htmlwidgets, htmltools, jsonlite, magrittr, utils, methods,\ngrDevices, stats",
-        "License": "MIT + file LICENSE",
-        "Encoding": "UTF-8",
-        "Suggests": "knitr, rmarkdown, webshot, igraph, rpart, shiny,\nshinyWidgets, colourpicker, sparkline, ggraph, tidygraph,\nflashClust",
-        "VignetteBuilder": "knitr, rmarkdown",
-        "RoxygenNote": "7.3.3",
-        "NeedsCompilation": "no",
-        "Packaged": "2025-09-04 09:23:19 UTC; BenoîtThieurmel",
-        "Author": "Almende B.V. and Contributors [aut, cph] (vis.js library in\n    htmlwidgets/lib, https://visjs.org/,\n    https://github.com/visjs/vis-network),\n  Benoit Thieurmel [aut, cre] (R interface)",
-        "Repository": "CRAN",
-        "Date/Publication": "2025-09-04 10:10:02 UTC",
-        "Built": "R 4.5.3; ; 2026-08-05 12:49:03 UTC; windows",
-        "RemoteType": "standard",
-        "RemotePkgRef": "visNetwork",
-        "RemoteRef": "visNetwork",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha.Version": "2.1.4"
-      }
-    },
-    "vroom": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "vroom",
-        "Title": "Read and Write Rectangular Text Data Quickly",
-        "Version": "1.7.0",
-        "Authors@R": "c(\n    person(\"Jim\", \"Hester\", role = \"aut\",\n           comment = c(ORCID = \"0000-0002-2739-7082\")),\n    person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = \"aut\",\n           comment = c(ORCID = \"0000-0003-4757-117X\")),\n    person(\"Jennifer\", \"Bryan\", , \"jenny@posit.co\", role = c(\"aut\", \"cre\"),\n           comment = c(ORCID = \"0000-0002-6983-2759\")),\n    person(\"Shelby\", \"Bearrows\", role = \"ctb\"),\n    person(\"https://github.com/mandreyel/\", role = \"cph\",\n           comment = \"mio library\"),\n    person(\"Jukka\", \"Jylänki\", role = \"cph\",\n           comment = \"grisu3 implementation\"),\n    person(\"Mikkel\", \"Jørgensen\", role = \"cph\",\n           comment = \"grisu3 implementation\"),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"), comment = c(ROR = \"03wc8by49\"))\n  )",
-        "Description": "The goal of 'vroom' is to read and write data (like 'csv',\n    'tsv' and 'fwf') quickly. When reading it uses a quick initial\n    indexing step, then reads the values lazily , so only the data you\n    actually use needs to be read.  The writer formats the data in\n    parallel and writes to disk asynchronously from formatting.",
-        "License": "MIT + file LICENSE",
-        "URL": "https://vroom.tidyverse.org, https://github.com/tidyverse/vroom",
-        "BugReports": "https://github.com/tidyverse/vroom/issues",
-        "Depends": "R (>= 4.1)",
-        "Imports": "bit64, cli (>= 3.2.0), crayon, glue, hms, lifecycle (>=\n1.0.3), methods, rlang (>= 1.1.0), stats, tibble (>= 2.0.0),\ntidyselect, tzdb (>= 0.1.1), vctrs (>= 0.2.0), withr",
-        "Suggests": "archive, bench (>= 1.1.0), covr, curl, dplyr, forcats, fs,\nggplot2, knitr, patchwork, prettyunits, purrr, rmarkdown,\nrstudioapi, scales, spelling, testthat (>= 2.1.0), tidyr,\nutils, waldo, xml2",
-        "LinkingTo": "cpp11 (>= 0.2.0), progress (>= 1.2.3), tzdb (>= 0.1.1)",
-        "VignetteBuilder": "knitr",
-        "Config/Needs/website": "nycflights13, tidyverse/tidytemplate",
-        "Config/testthat/edition": "3",
-        "Config/testthat/parallel": "false",
-        "Config/usethis/last-upkeep": "2025-11-25",
-        "Copyright": "file COPYRIGHTS",
-        "Encoding": "UTF-8",
-        "Language": "en-US",
-        "RoxygenNote": "7.3.3",
-        "Config/build/compilation-database": "true",
-        "NeedsCompilation": "yes",
-        "Packaged": "2026-01-25 17:51:12 UTC; jenny",
-        "Author": "Jim Hester [aut] (ORCID: <https://orcid.org/0000-0002-2739-7082>),\n  Hadley Wickham [aut] (ORCID: <https://orcid.org/0000-0003-4757-117X>),\n  Jennifer Bryan [aut, cre] (ORCID:\n    <https://orcid.org/0000-0002-6983-2759>),\n  Shelby Bearrows [ctb],\n  https://github.com/mandreyel/ [cph] (mio library),\n  Jukka Jylänki [cph] (grisu3 implementation),\n  Mikkel Jørgensen [cph] (grisu3 implementation),\n  Posit Software, PBC [cph, fnd] (ROR: <https://ror.org/03wc8by49>)",
-        "Maintainer": "Jennifer Bryan <jenny@posit.co>",
-        "Repository": "CRAN",
-        "Date/Publication": "2026-01-27 11:40:02 UTC",
-        "Built": "R 4.5.3; x86_64-w64-mingw32; 2026-03-18 04:57:12 UTC; windows",
-        "Archs": "x64",
-        "RemoteType": "standard",
-        "RemotePkgRef": "vroom",
-        "RemoteRef": "vroom",
-        "RemoteRepos": "https://cran.rstudio.com",
-        "RemoteSha": "1.7.0"
-      }
-    },
     "withr": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -5004,19 +4443,19 @@
   },
   "files": {
     "01_clean_AIARMS.R": {
-      "checksum": "6553123fd95afc5de3d9b9faa63f344f"
+      "checksum": "cf4f7180768022d348ccf59ef5c2706d"
     },
     "01b_add_spatial.R": {
-      "checksum": "2c802cf09fa187d44fc1612f51b160e1"
+      "checksum": "64e0b914771038283a156bd873eb28aa"
     },
     "03_mgm_explorer_app_1.R": {
       "checksum": "7e0748171c6ba922832ace725619490d"
     },
-    "AIARMS_mgm_spatial.rds": {
-      "checksum": "dc3ecf0e27a0bc2056727f7fc652170c"
+    "1-s2.0-S0265931X23001005-main.pdf": {
+      "checksum": "0c43681b419efe87b14d6f607564ba43"
     },
     "app.R": {
-      "checksum": "bf3211652ab1506ad81aec722cf40768"
+      "checksum": "cd912f1cdc54fa72a1ad9bf8ceec09e8"
     },
     "full_AIARMS_df.csv": {
       "checksum": "549233aaa2944a873a408b4be55f5841"
@@ -5036,62 +4475,68 @@
     "gadm41_ZAF_4.shx": {
       "checksum": "acd227c6640ab54f48bc753d9f9b153d"
     },
+    "MARQUIS.Rmd": {
+      "checksum": "a9cc248cb172c81bb06e26e828a43e29"
+    },
     "MGM(Research).Rmd": {
-      "checksum": "b6a404dddd690fb13c3c241ec58b5fd5"
+      "checksum": "e6f222fc240b78f98a91a493a6e63ff9"
+    },
+    "MGM_Research_.Rmd": {
+      "checksum": "75a6a96c17003cd43ae16d536e43279e"
     },
     "mgm_spatial_bundle.rds": {
-      "checksum": "caca3efdf5ca95c9fbb912ceda8c665b"
+      "checksum": "46bd21b018b1fac4d5403f48e316b0e1"
     },
     "mgm_spatial_core.R": {
       "checksum": "b6869f5fcce4ce2b6d50deefb78aa58b"
     },
+    "OneDrive_1_14-09-2026.zip": {
+      "checksum": "2c65700f56c5b45813bd901de987b613"
+    },
     "output/AIARMS_clean.csv": {
-      "checksum": "2422d0aa7595680533d406a733b9842e"
+      "checksum": "268695ceb654d93ed6aa54e791fecf92"
     },
     "output/AIARMS_clean_spatial.csv": {
-      "checksum": "6461199f5bc040058fa1b8c052524362"
+      "checksum": "c8b52653f1d2d186350a58e0141c2376"
     },
     "output/AIARMS_mgm.rds": {
-      "checksum": "f60d56f5a1bd871026e9d1671fa65465"
+      "checksum": "c383ad1f3ec3a88e1293bddca0355ab4"
     },
     "output/AIARMS_mgm_spatial.rds": {
-      "checksum": "c5eefcc0ba4ee65433f20b07452e14de"
+      "checksum": "ed2fcea90aeff99701b5586e0b0d7c5f"
     },
     "output/fit_mgm_k2.rds": {
-      "checksum": "cfdca69a5952f0a687170d595e987798"
+      "checksum": "96fbc715f36569ae2df14dc65616d11d"
     },
     "output/mgm_edgelist.csv": {
-      "checksum": "44ff578bc317968349d8b94b4562a815"
+      "checksum": "b88ffa3ae02e0422fe4e39bb2a693f4d"
     },
     "output/mgm_network.pdf": {
-      "checksum": "2853e4a19b36a0f845d03ef2eb4874ce"
+      "checksum": "f72bcfa5e7225f51ff2d7b74ae1ab222"
     },
     "output/mgm_resample.rds": {
-      "checksum": "9ec6866753360005863eeddb5a2ead9e"
+      "checksum": "663176930bc9374588c016ed1f0077f9"
+    },
+    "output/mgm_spatial_bundle.rds": {
+      "checksum": "f5ab7b261509e8da145e46273eb0adc7"
     },
     "output/mgm_stability.pdf": {
-      "checksum": "94f79499c1aa8bb0b62e90055b9a2af0"
+      "checksum": "b25f809cafa9d4699fc6e7ad7e284953"
     },
     "output/moran_raw.csv": {
-      "checksum": "3030e0feb9e9a1023a5cd5c923112081"
+      "checksum": "5377be93587278b3f986d9c463f8c854"
     },
     "output/moran_residual.csv": {
-      "checksum": "77ceb49c7e2927c7f21c420d68c33a71"
+      "checksum": "feab9f75a0727884887fac79baa72b60"
     },
     "output/spatial_correlogram.pdf": {
-      "checksum": "858c70759f7310c50a0616ebb4431559"
+      "checksum": "c5f33f3a572d6a7de800cf8cadf33cb8"
     },
     "output/spatial_map.pdf": {
-      "checksum": "07fcfbeb97c0c7f39bc81b948d6ab553"
+      "checksum": "da93016425947a7c81531f004e4264b0"
     },
-    "spatial_autocorrelation_MGM (1).Rmd": {
+    "spatial_autocorrelation_MGM.Rmd": {
       "checksum": "6da65b8ddb95302961b2a14474b4ccf3"
-    },
-    "spatial_autocorrelation_MGM .Rmd": {
-      "checksum": "6da65b8ddb95302961b2a14474b4ccf3"
-    },
-    "SWAM.R": {
-      "checksum": "cd3e3d2ed20268943aa2217059e1c025"
     }
   },
   "users": null
