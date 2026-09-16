@@ -4442,20 +4442,65 @@
     }
   },
   "files": {
-    "01_clean_AIARMS.R": {
-      "checksum": "cf4f7180768022d348ccf59ef5c2706d"
-    },
-    "01b_add_spatial.R": {
-      "checksum": "64e0b914771038283a156bd873eb28aa"
-    },
-    "03_mgm_explorer_app_1.R": {
-      "checksum": "7e0748171c6ba922832ace725619490d"
-    },
-    "1-s2.0-S0265931X23001005-main.pdf": {
-      "checksum": "0c43681b419efe87b14d6f607564ba43"
-    },
     "app.R": {
-      "checksum": "cd912f1cdc54fa72a1ad9bf8ceec09e8"
+      "checksum": "2364542cf7f7e5008a08cc059e5465a6"
+    },
+    "Claude outputs/app.R": {
+      "checksum": "17d56240ef5e9085d2e14aa945983582"
+    },
+    "Claude outputs/CODE_AUDIT.md": {
+      "checksum": "fe8dde74df9dea2fae712b5161c4a22a"
+    },
+    "Claude outputs/CODE_AUDIT.pdf": {
+      "checksum": "91f7e2da8ba166c41693f6e4a208f695"
+    },
+    "Claude outputs/f_wide.png": {
+      "checksum": "cea9eab02cef564bbeb725c05e5af739"
+    },
+    "Claude outputs/mgm_spatial_core.R": {
+      "checksum": "6f2366153fc757e66eb7a7a1e3c0a18d"
+    },
+    "Claude outputs/Research_additions.bib": {
+      "checksum": "b2f1f559c7780ce990749033bb3faa71"
+    },
+    "Claude outputs/Section2_report_edits.tex": {
+      "checksum": "fdd53ee7be34461393db0948f6355b4b"
+    },
+    "Claude outputs/Section2_report_edits_preview.pdf": {
+      "checksum": "3fbfca915787548372756c206b03e88a"
+    },
+    "Claude outputs/Section3_Application_skeleton-1.tex": {
+      "checksum": "0e1ccf57e6e9423c814666e33573cd35"
+    },
+    "Claude outputs/Section3_Application_skeleton.tex": {
+      "checksum": "809b306bc646e52952e660a3a0b5bcbb"
+    },
+    "Claude outputs/Section3_skeleton_preview.pdf": {
+      "checksum": "d75bfd5f546885708a970cc5af7925d7"
+    },
+    "Claude outputs/SWAM_clinical_slate.png": {
+      "checksum": "3d3d5c798371e08592accd828c69859a"
+    },
+    "Claude outputs/SWAM_palettes.png": {
+      "checksum": "11d2decf10342c203a725f71ebee721b"
+    },
+    "Claude outputs/SWAM_prose_checklist.md": {
+      "checksum": "310d0319431f4cfe137587ecdf9d4bf2"
+    },
+    "Claude outputs/SWAM_prose_checklist.pdf": {
+      "checksum": "3936d565b93d263a2ec8cf60b42e9f31"
+    },
+    "Claude outputs/WST795_analysis.Rmd": {
+      "checksum": "e74c50f690a9f4c33d0aab3344dc41f7"
+    },
+    "Claude outputs/WST795_edit_map.pdf": {
+      "checksum": "7469be46b304892ec8c042499649edc7"
+    },
+    "CODE_AUDIT.md": {
+      "checksum": "fe8dde74df9dea2fae712b5161c4a22a"
+    },
+    "CODE_AUDIT.pdf": {
+      "checksum": "91f7e2da8ba166c41693f6e4a208f695"
     },
     "full_AIARMS_df.csv": {
       "checksum": "549233aaa2944a873a408b4be55f5841"
@@ -4475,23 +4520,14 @@
     "gadm41_ZAF_4.shx": {
       "checksum": "acd227c6640ab54f48bc753d9f9b153d"
     },
-    "MARQUIS.Rmd": {
-      "checksum": "a9cc248cb172c81bb06e26e828a43e29"
-    },
     "MGM(Research).Rmd": {
-      "checksum": "e6f222fc240b78f98a91a493a6e63ff9"
-    },
-    "MGM_Research_.Rmd": {
-      "checksum": "75a6a96c17003cd43ae16d536e43279e"
+      "checksum": "33d73e8eba7523e4cd9a91ab14420920"
     },
     "mgm_spatial_bundle.rds": {
-      "checksum": "46bd21b018b1fac4d5403f48e316b0e1"
+      "checksum": "689efcdf5c7a54a9c5ceeeb11d08fe1a"
     },
     "mgm_spatial_core.R": {
-      "checksum": "b6869f5fcce4ce2b6d50deefb78aa58b"
-    },
-    "OneDrive_1_14-09-2026.zip": {
-      "checksum": "2c65700f56c5b45813bd901de987b613"
+      "checksum": "6f2366153fc757e66eb7a7a1e3c0a18d"
     },
     "output/AIARMS_clean.csv": {
       "checksum": "268695ceb654d93ed6aa54e791fecf92"
@@ -4535,8 +4571,41 @@
     "output/spatial_map.pdf": {
       "checksum": "da93016425947a7c81531f004e4264b0"
     },
+    "Research_additions.bib": {
+      "checksum": "b2f1f559c7780ce990749033bb3faa71"
+    },
+    "Section2_report_edits.tex": {
+      "checksum": "fdd53ee7be34461393db0948f6355b4b"
+    },
+    "Section3_Application_skeleton.tex": {
+      "checksum": "0e1ccf57e6e9423c814666e33573cd35"
+    },
     "spatial_autocorrelation_MGM.Rmd": {
-      "checksum": "6da65b8ddb95302961b2a14474b4ccf3"
+      "checksum": "2296e7360ebdcc75069f33614c722e87"
+    },
+    "SWAM/app.R": {
+      "checksum": "17d56240ef5e9085d2e14aa945983582"
+    },
+    "SWAM/mgm_spatial_bundle.rds": {
+      "checksum": "689efcdf5c7a54a9c5ceeeb11d08fe1a"
+    },
+    "SWAM/mgm_spatial_core.R": {
+      "checksum": "84aa165df9cef4d480e439ad49a3ac48"
+    },
+    "SWAM/output/AIARMS_mgm_spatial.rds": {
+      "checksum": "ed2fcea90aeff99701b5586e0b0d7c5f"
+    },
+    "SWAM_prose_checklist.md": {
+      "checksum": "310d0319431f4cfe137587ecdf9d4bf2"
+    },
+    "SWAM_prose_checklist.pdf": {
+      "checksum": "3936d565b93d263a2ec8cf60b42e9f31"
+    },
+    "WST795_analysis.Rmd": {
+      "checksum": "e74c50f690a9f4c33d0aab3344dc41f7"
+    },
+    "WST795_edit_map.pdf": {
+      "checksum": "7469be46b304892ec8c042499649edc7"
     }
   },
   "users": null
