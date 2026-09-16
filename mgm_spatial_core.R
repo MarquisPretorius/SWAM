@@ -1,7 +1,7 @@
 ## ---------------------------------------------------------------------------
 ## mgm_spatial_core.R
 ##
-## Tangled from spatial_autocorrelation_MGM.Rmd on 2026-09-15.
+## Tangled from WST795_analysis.Rmd on 2026-09-15.
 ## Edit the Rmd, not this file.
 ## ---------------------------------------------------------------------------
 
@@ -72,8 +72,24 @@ make_listw <- function(coords, type = c("knn", "dist", "idw"),
   n <- nrow(coords)
   if (type == "knn") {
     k  <- min(k, n - 1L)
-    nb <- spdep::knn2nb(spdep::knearneigh(coords, k = k), sym = FALSE)
-    lw <- spdep::nb2listw(nb, style = style, zero.policy = TRUE)
+    ## SYMMETRISATION. A k-nearest-neighbour graph is directed: j can be among
+    ## the k nearest to i without i being among the k nearest to j. Section 2.1
+    ## of the report defines W as the average of the indicator matrix with its
+    ## transpose, (B + B')/2, row-standardised, so that is what is built here.
+    ## make.sym.nb() gives the neighbour set of that matrix (a cell is non-zero
+    ## if EITHER direction had it); the glist then carries 1 on a reciprocated
+    ## link and 0.5 on a one-directional one, and style = "W" standardises the
+    ## rows. Verified to reproduce (B + B')/2 to 0 at 1662 non-zero cells, and
+    ## to reproduce the W built independently in the model-fitting section --
+    ## before this change those two disagreed by up to 0.024 on Moran's I.
+    nbk <- spdep::knn2nb(spdep::knearneigh(coords, k = k), sym = FALSE)
+    nbu <- spdep::make.sym.nb(nbk)
+    gl  <- lapply(seq_along(nbu), function(i) {
+      j   <- nbu[[i]]
+      rec <- j %in% nbk[[i]] & vapply(j, function(jj) i %in% nbk[[jj]], TRUE)
+      ifelse(rec, 1, 0.5)
+    })
+    lw <- spdep::nb2listw(nbu, glist = gl, style = style, zero.policy = TRUE)
   } else if (type == "dist") {
     nb <- spdep::dnearneigh(coords, 0, d)
     lw <- spdep::nb2listw(nb, style = style, zero.policy = TRUE)

@@ -42,9 +42,9 @@ find_app_file <- function(filename) {
 # recomputing them from the CSV. Located with the same find_app_file() helper
 # the rest of the app uses, so no new path convention is introduced.
 #
-#   mgm_spatial_core.R          tangled from spatial_autocorrelation_MGM.Rmd
+#   mgm_spatial_core.R          tangled from WST795_analysis.Rmd
 #   mgm_spatial_bundle.rds      its exported results
-#   output/AIARMS_mgm_spatial.rds   built by 01_clean_AIARMS.R + 01b_add_spatial.R
+#   output/AIARMS_mgm_spatial.rds   built by WST795_analysis.Rmd (Spatial component)
 #
 # If any is absent the corresponding section shows a status message and the
 # rest of the dashboard is unaffected.
@@ -157,7 +157,7 @@ run_pipeline <- function() {
 }
 
 # Rebuild mgm_spatial_bundle.rds. This is the same sequence as the export chunk
-# of spatial_autocorrelation_MGM.Rmd and calls the same functions out of
+# of WST795_analysis.Rmd and calls the same functions out of
 # mgm_spatial_core.R, so the statistics cannot diverge from the report; only
 # the assembly is restated here so the app can stand alone.
 build_spatial_bundle <- function(obj_path, out_path,
@@ -274,8 +274,8 @@ local({
     if (!identical(SPB$schema, BUNDLE_SCHEMA))
       stop(basename(bundle_path), " was built by an earlier version of the ",
            "pipeline (schema ", SPB$schema %|z|% "none", "; this app expects ",
-           BUNDLE_SCHEMA, "). Delete it and re-run 01_clean_AIARMS.R, ",
-           "01b_add_spatial.R and the spatial document so it is rebuilt. ",
+           BUNDLE_SCHEMA, "). Delete it and re-knit WST795_analysis.Rmd, ",
+           "which rebuilds the bundle and the core script together. ",
            "On a deployed copy, rebuild locally and redeploy the .rds files.")
     SP_OK <<- TRUE
     NULL
@@ -320,7 +320,7 @@ local({
   else if (is.null(nrow(obj$registry)) || nrow(obj$registry) < 1)
     bad <- "$registry is empty"
   if (!is.null(bad)) {
-    MGM_LOAD_ERR <<- paste0(obj_path, " is not the object 01b_add_spatial.R ",
+    MGM_LOAD_ERR <<- paste0(obj_path, " is not the object the Spatial component chunk ",
                             "builds: ", bad, ". Rebuild it, or point MGM_OBJECT ",
                             "at the right file.")
     return(invisible(NULL))
@@ -2268,8 +2268,9 @@ server <- function(input, output, session) {
       tags$b("Spatial analysis objects not available. "),
       if (!is.null(SP_LOAD_ERR)) tags$span(SP_LOAD_ERR, tags$br()),
       "This section needs mgm_spatial_core.R and mgm_spatial_bundle.rds in the app folder. ",
-      "The bundle is written by the export chunk of spatial_autocorrelation_MGM.Rmd, ",
-      "which in turn needs output/AIARMS_mgm_spatial.rds from 01_clean_AIARMS.R and 01b_add_spatial.R."
+      "Both are written by WST795_analysis.Rmd: the export chunk writes the bundle and ",
+      "the tangle chunk writes the core script. One knit of that document produces ",
+      "everything the app loads, including output/AIARMS_mgm_spatial.rds."
     )
   })
 
