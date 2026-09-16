@@ -56,10 +56,13 @@ find_app_file <- function(filename) {
 #      coded as "No"; joincount_cat column fix.
 #   3  site encoding is "dummy_full": one binary node per fieldwork code, all
 #      seven present and named. Site-to-site edges are suppressed on display.
+#   5  Weights symmetrised by averaging, (B + B')/2 row-standardised, so the
+#      spatial section and the model-fitting section use ONE definition. Before
+#      this the two disagreed by up to 0.024 on Moran's I.
 #   4  Lee's L removed throughout. Section 2.1 of the report defines Moran's I,
 #      Geary's C and the local Moran only, and the bivariate statistic was never
 #      plotted in the app, so it was carried without being used.
-BUNDLE_SCHEMA <- 4L
+BUNDLE_SCHEMA <- 5L
 
 SPATIAL_CORE   <- "mgm_spatial_core.R"
 SPATIAL_BUNDLE <- "mgm_spatial_bundle.rds"
@@ -666,12 +669,12 @@ PAL_MGM  <- c("Carriage" = "#D6455B", "Demographic" = "#F58A5E",
 # page is an epidemiological signal rather than decoration.
 app_theme <- bs_theme(
   version   = 5,
-  bg        = "#041F29",   # abyss
-  fg        = "#DCEEF3",   # foam
-  primary   = "#22D3EE",   # bioluminescent aqua
-  secondary = "#16576B",   # shelf
+  bg        = "#0A1A20",   # abyss
+  fg        = "#E6EEF1",   # foam
+  primary   = "#46C8D8",   # bioluminescent aqua
+  secondary = "#2A4A55",   # shelf
   success   = "#3DDC97",   # algal green
-  info      = "#5AB8D4",   # shallow water
+  info      = "#6AAEBD",   # shallow water
   warning   = "#FFC15E",   # caution
   danger    = "#FF6B6B"    # contamination
 )
@@ -746,6 +749,26 @@ glow_header <- function(title) card_header(span(class = "glow", title))
 # Every section opens with the same banner: an eyebrow label, a heading and one
 # line saying what the section answers. Consistency here is what stops the app
 # reading as a pile of unrelated tabs.
+SECTIONS <- c("Introduction", "Methodology", "Spatial Autocorrelation",
+              "MGM Explorer", "Conclusion")
+SEC_ICON <- c("Introduction" = "house-door-fill", "Methodology" = "gear-wide-connected",
+              "Spatial Autocorrelation" = "bullseye", "MGM Explorer" = "diagram-3-fill",
+              "Conclusion" = "check2-circle")
+sec_id <- function(x) gsub("[^a-z]", "", tolower(x))
+
+# A row of buttons to every OTHER section, shown under each section heading.
+# Ids are generated from the pair, and the server registers one observer per
+# pair, so adding a section here is the only change needed.
+sec_nav <- function(current) {
+  others <- setdiff(SECTIONS, current)
+  div(class = "sec-nav",
+      span(class = "sec-nav-label", "Go to"),
+      lapply(others, function(t)
+        actionButton(paste0("go_", sec_id(current), "_", sec_id(t)), t,
+                     icon  = bsicons::bs_icon(unname(SEC_ICON[t])),
+                     class = "btn-sm sec-nav-btn")))
+}
+
 sec_head <- function(eyebrow, title, lede) {
   div(class = "sec-head",
       div(class = "eyebrow", eyebrow),
@@ -762,60 +785,127 @@ ui <- page_navbar(
   fillable = FALSE,
   header = tagList(
     tags$head(tags$style(HTML("
-      body, .bslib-page-navbar { background-color: #041F29 !important; color: #DCEEF3 !important; }
+      body, .bslib-page-navbar { background-color: #0A1A20 !important; color: #E6EEF1 !important; }
       .card:not(.mgm-card), .bslib-card:not(.mgm-card), .well, .accordion-body { 
-        background-color: #0B3140 !important; color: #DCEEF3 !important; border: 1px solid #16576B !important; 
+        background-color: #13272F !important; color: #E6EEF1 !important; border: 1px solid #2A4A55 !important; 
       }
-      .accordion-button { background-color: #0B3140 !important; color: #22D3EE !important; border-bottom: 1px solid #16576B !important; }
-      .accordion-button:not(.collapsed) { background-color: #072A36 !important; color: #22D3EE !important; }
-      .sidebar, .bslib-sidebar-layout > .sidebar { background-color: #072A36 !important; border-right: 1px solid #16576B !important; }
-      .nav-tabs .nav-link.active { background-color: #22D3EE !important; color: #041F29 !important; font-weight: bold; }
-      .nav-tabs .nav-link { color: #8FAFBC !important; }
-      .table, .table td, .table th, .dataTables_wrapper { color: #DCEEF3 !important; }
-      .form-control, .form-select { background-color: #041F29 !important; color: #DCEEF3 !important; border: 1px solid #16576B !important; }
-      .value-box { background-color: #0B3140 !important; border: 1px solid #16576B !important; }
+      .accordion-button { background-color: #13272F !important; color: #46C8D8 !important; border-bottom: 1px solid #2A4A55 !important; }
+      .accordion-button:not(.collapsed) { background-color: #0E2027 !important; color: #46C8D8 !important; }
+      .sidebar, .bslib-sidebar-layout > .sidebar { background-color: #0E2027 !important; border-right: 1px solid #2A4A55 !important; }
+      .nav-tabs .nav-link.active { background-color: #46C8D8 !important; color: #0A1A20 !important; font-weight: bold; }
+      .nav-tabs .nav-link { color: #9DB0B8 !important; }
+      .table, .table td, .table th, .dataTables_wrapper { color: #E6EEF1 !important; }
+      .form-control, .form-select { background-color: #0A1A20 !important; color: #E6EEF1 !important; border: 1px solid #2A4A55 !important; }
+      .value-box { background-color: #13272F !important; border: 1px solid #2A4A55 !important; }
+      /* --- Boxes size to their content -------------------------------
+         bslib lays cards out as flex/grid fill items, so a card in a row
+         stretches to the tallest and its body centres the content in the
+         leftover space. These rules turn the body back into ordinary block
+         flow and let every card end where its content ends. Cards holding a
+         plot, a map or a table are unaffected: those outputs carry an
+         explicit pixel height of their own. */
+      .bslib-grid > *, .bslib-grid > .card, .bslib-grid > .bslib-card,
+      .grid > .card, .grid > .bslib-card { align-self: start !important; }
+      .card, .bslib-card, .card.html-fill-container {
+        height: auto !important; flex: 0 0 auto !important; }
+      .card > .card-body, .card > .card-body.html-fill-item,
+      .card-body.bslib-gap-spacing {
+        display: block !important; flex: 0 0 auto !important;
+        height: auto !important; min-height: 0 !important;
+        justify-content: flex-start !important; overflow: visible !important; }
+      .card > .card-body > .html-fill-item { flex: 0 0 auto !important; }
+      .accordion-body > .card { height: auto !important; }
+      .card-body > *:last-child { margin-bottom: 0; }
+      .card-body ul, .card-body ol { margin-bottom: 0; padding-left: 1.15rem; }
+      .card-body li + li { margin-top: 0.42rem; }
+
+      /* --- Headings carry more weight ---------------------------------- */
+      .card-header { font-size: 1.06rem !important; font-weight: 700 !important;
+                     letter-spacing: 0.015em; padding: 13px 20px 12px 20px !important;
+                     border-left: 3px solid #46C8D8 !important; }
+      .card-header:has(.glow) { box-shadow: inset 0 -1px 0 rgba(34,211,238,0.45);
+                                font-size: 1.16rem !important;
+                                padding: 14px 20px 13px 20px !important; }
+      .sec-head { margin: 4px 0 20px 0; }
+      .sec-head h2 { font-size: 2.0rem; font-weight: 800; letter-spacing: 0.015em;
+                     margin: 2px 0 6px 0; }
+      .eyebrow { text-transform: uppercase; letter-spacing: 0.16em;
+                 font-size: 0.72rem; font-weight: 700; color: #6AAEBD; }
+      h5 { font-size: 1.06rem !important; letter-spacing: 0.015em; }
+      h6 { font-size: 0.8rem !important; letter-spacing: 0.13em; color: #9DB0B8 !important; }
+      .mgm-card h6 { color: #4A6470 !important; }
+
+      /* --- Title bar ---------------------------------------------------
+         The tab strip is hidden. Every section carries its own Go-to row,
+         so the navbar is a title bar and nothing else; nav_select() still
+         drives the panels underneath. */
+      .navbar .navbar-nav, .navbar .nav, .navbar-toggler { display: none !important; }
+      .navbar > .container-fluid, .navbar > .container,
+      .bslib-page-navbar > .navbar > .container-fluid {
+        justify-content: center !important; }
+      .navbar-brand { margin: 0 auto !important; float: none !important;
+                      font-size: 1.45rem !important; letter-spacing: 0.14em !important;
+                      padding: 2px 0 0 0 !important; }
+      .navbar { border-bottom: 1px solid #2A4A55 !important;
+                padding-top: 10px !important; padding-bottom: 8px !important; }
+
+      /* --- Section navigation ------------------------------------------ */
+      .sec-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+                 margin: -8px 0 22px 0; padding: 10px 14px;
+                 background: #0E2027; border: 1px solid #2A4A55;
+                 border-radius: 8px; }
+      .sec-nav-label { text-transform: uppercase; letter-spacing: 0.15em;
+                       font-size: 0.68rem; font-weight: 700; color: #9DB0B8;
+                       margin-right: 4px; }
+      .sec-nav-btn, .jump-row .btn {
+        border: 1px solid #2A4A55 !important; background: #13272F !important;
+        color: #C8D9DF !important; font-weight: 600; letter-spacing: 0.01em;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+      .sec-nav-btn:hover, .jump-row .btn:hover {
+        background: #46C8D8 !important; color: #0A1A20 !important;
+        border-color: #46C8D8 !important; }
+      .jump-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+
       /* Keyless dark basemap: invert plain OSM tiles rather than pull a
          keyed dark-tile service. Applies to the tile images only. */
       .swam-dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(0.93)
                                  contrast(0.86) saturate(0.55); }
       .leaflet-container .leaflet-control-attribution {
-        background: rgba(4,31,41,0.72) !important; color: #BBD7E0 !important; }
-      .leaflet-container .leaflet-control-attribution a { color: #22D3EE !important; }
+        background: rgba(4,31,41,0.72) !important; color: #C8D9DF !important; }
+      .leaflet-container .leaflet-control-attribution a { color: #46C8D8 !important; }
       .sp-basemap { margin-bottom: 6px; }
       .sp-basemap .form-group { margin-bottom: 0; }
       .mgm-card { background-color: #FFFFFF !important; color: #1A202C !important; border: 1px solid #C3D9E0 !important; }
       .mgm-card p, .mgm-card h5, .mgm-card div { color: #1A202C !important; }
       .navbar-brand { font-weight: 700 !important; letter-spacing: 0.06em; }
-      .swam-subtitle { color: #8FAFBC; font-size: 0.95rem; letter-spacing: 0.02em;
-                       padding: 4px 0 10px 4px; }
 
       /* Landing page */
-      .hero { background: linear-gradient(135deg, #072A36 0%, #041F29 70%);
-              border: 1px solid #16576B; border-radius: 8px;
+      .hero { background: linear-gradient(135deg, #0E2027 0%, #0A1A20 70%);
+              border: 1px solid #2A4A55; border-radius: 8px;
               padding: 34px 38px; margin-bottom: 22px; }
       .hero h1 { font-size: 2.15rem; font-weight: 700; letter-spacing: 0.02em;
                  margin: 0 0 6px 0; color: #FFFFFF; }
-      .hero .lede { font-size: 1.05rem; color: #BBD7E0; max-width: 60em;
+      .hero .lede { font-size: 1.05rem; color: #C8D9DF; max-width: 60em;
                     line-height: 1.55; margin-bottom: 4px; }
       .hero .eyebrow { text-transform: uppercase; letter-spacing: 0.18em;
-                       font-size: 0.72rem; color: #22D3EE; margin-bottom: 10px; }
+                       font-size: 0.72rem; color: #46C8D8; margin-bottom: 10px; }
       .jump-row .btn { margin: 14px 10px 0 0; font-weight: 600; }
-      .aim { border-left: 3px solid #22D3EE; padding: 2px 0 2px 14px;
+      .aim { border-left: 3px solid #46C8D8; padding: 2px 0 2px 14px;
              margin-bottom: 16px; }
-      .aim b { color: #22D3EE; }
+      .aim b { color: #46C8D8; }
       .step-num { display: inline-block; width: 26px; height: 26px;
-                  border-radius: 50%; background: #22D3EE; color: #041F29;
+                  border-radius: 50%; background: #46C8D8; color: #0A1A20;
                   text-align: center; font-weight: 700; line-height: 26px;
                   margin-right: 10px; }
       .theory { line-height: 1.62; }
-      .theory .eqnote { color: #8FAFBC; font-size: 0.88rem; }
-      .MathJax, .MathJax_Display { color: #DCEEF3 !important; }
+      .theory .eqnote { color: #9DB0B8; font-size: 0.88rem; }
+      .MathJax, .MathJax_Display { color: #E6EEF1 !important; }
 
       /* --- Section banners: every section opens the same way --- */
-      .sec-head { border-left: 4px solid #22D3EE; padding: 2px 0 2px 18px;
+      .sec-head { border-left: 4px solid #46C8D8; padding: 2px 0 2px 18px;
                   margin: 4px 0 22px 0; }
       .sec-head .eyebrow { text-transform: uppercase; letter-spacing: 0.16em;
-                           font-size: 0.68rem; color: #22D3EE; font-weight: 700;
+                           font-size: 0.68rem; color: #46C8D8; font-weight: 700;
                            margin-bottom: 6px; }
       .sec-head h2 { font-size: 1.55rem; font-weight: 700; color: #FFFFFF;
                      margin: 0 0 8px 0; letter-spacing: 0.01em; }
@@ -824,27 +914,37 @@ ui <- page_navbar(
 
       /* --- Headings inside cards --- */
       .card-header { font-weight: 700 !important; letter-spacing: 0.03em;
-                     background-color: #072A36 !important;
-                     border-bottom: 1px solid #16576B !important;
-                     color: #22D3EE !important; font-size: 0.95rem; }
-      h5 { color: #22D3EE; font-weight: 700; font-size: 1.02rem;
+                     background-color: #0E2027 !important;
+                     border-bottom: 1px solid #2A4A55 !important;
+                     color: #46C8D8 !important; font-size: 0.95rem; }
+      h5 { color: #46C8D8; font-weight: 700; font-size: 1.02rem;
            letter-spacing: 0.02em; margin-top: 4px; }
-      h6 { color: #DCEEF3; font-weight: 700; font-size: 0.88rem;
+      h6 { color: #E6EEF1; font-weight: 700; font-size: 0.88rem;
            text-transform: uppercase; letter-spacing: 0.09em; }
       .mgm-card h5, .mgm-card h6 { color: #1A202C !important; }
+      /* A white panel that is given a header must carry the light treatment
+         through it, or the header text inherits the dark-theme colour and
+         becomes near-invisible on white. */
+      .mgm-card > .card-header { background-color: #FFFFFF !important;
+        color: #1A202C !important; border-bottom: 1px solid #C3D9E0 !important;
+        border-left: 3px solid #46C8D8 !important; }
+      .mgm-card .card-header span, .mgm-card .card-header .glow {
+        color: #1A202C !important; -webkit-text-fill-color: #1A202C !important;
+        background-image: none !important; animation: none !important;
+        filter: none !important; }
 
       /* --- Tabs: clearer active state, more breathing room --- */
-      .nav-tabs { border-bottom: 1px solid #16576B !important; }
+      .nav-tabs { border-bottom: 1px solid #2A4A55 !important; }
       .nav-tabs .nav-link { padding: 10px 18px !important; font-weight: 600;
                             border: none !important; }
-      .nav-tabs .nav-link:hover { color: #22D3EE !important; }
+      .nav-tabs .nav-link:hover { color: #46C8D8 !important; }
       .nav-tabs .nav-link.active { border-radius: 6px 6px 0 0 !important; }
       .navbar .nav-link { font-weight: 600; letter-spacing: 0.02em; }
 
       /* --- Value boxes --- */
       .value-box .value-box-title { text-transform: uppercase;
                                     letter-spacing: 0.11em; font-size: 0.7rem;
-                                    color: #8FAFBC !important; }
+                                    color: #9DB0B8 !important; }
       .value-box .value-box-value { font-weight: 700; }
 
       /* --- Rhythm --- */
@@ -852,7 +952,7 @@ ui <- page_navbar(
       .card-body { padding: 20px 22px; }
       .theory p { margin-bottom: 0.95rem; }
       .accordion-button { font-weight: 600; font-size: 0.9rem; }
-      hr { border-color: #16576B !important; opacity: 1; margin: 18px 0; }
+      hr { border-color: #2A4A55 !important; opacity: 1; margin: 18px 0; }
       .sidebar h6 { margin-top: 2px; }
 
       /* --- Themed notices, instead of Bootstrap's cream boxes --- */
@@ -864,29 +964,29 @@ ui <- page_navbar(
       .note-info { color: #A9EDF7 !important;
                    background: rgba(34,211,238,0.09) !important;
                    border: 1px solid rgba(34,211,238,0.40) !important;
-                   border-left: 4px solid #22D3EE !important;
+                   border-left: 4px solid #46C8D8 !important;
                    padding: 12px 16px; border-radius: 4px; }
       .note-warn b, .note-info b { color: inherit !important; }
 
       /* --- Equation panels: the maths becomes the focal point --- */
       .eqbox { background: linear-gradient(90deg, rgba(34,211,238,0.07), rgba(34,211,238,0.0));
-               border-left: 3px solid #22D3EE; border-radius: 0 6px 6px 0;
+               border-left: 3px solid #46C8D8; border-radius: 0 6px 6px 0;
                padding: 6px 20px 10px 20px; margin: 14px 0 20px 0; }
       .eqbox .eqlabel { text-transform: uppercase; letter-spacing: 0.15em;
-                        font-size: 0.66rem; color: #22D3EE; font-weight: 700;
+                        font-size: 0.66rem; color: #46C8D8; font-weight: 700;
                         margin-bottom: 2px; }
-      .eqbox .eqcap { color: #8FAFBC; font-size: 0.85rem; margin-top: 2px; }
+      .eqbox .eqcap { color: #9DB0B8; font-size: 0.85rem; margin-top: 2px; }
 
       /* --- Small fact chips used across the methodology tabs --- */
       .chiprow { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; }
-      .chip { flex: 1 1 210px; background: #072A36; border: 1px solid #16576B;
-              border-top: 3px solid #22D3EE; border-radius: 6px;
+      .chip { flex: 1 1 210px; background: #0E2027; border: 1px solid #2A4A55;
+              border-top: 3px solid #46C8D8; border-radius: 6px;
               padding: 12px 16px; }
       .chip .k { text-transform: uppercase; letter-spacing: 0.12em;
-                 font-size: 0.64rem; color: #8FAFBC; font-weight: 700; }
-      .chip .v { font-size: 1.02rem; color: #DCEEF3; font-weight: 700;
+                 font-size: 0.64rem; color: #9DB0B8; font-weight: 700; }
+      .chip .v { font-size: 1.02rem; color: #E6EEF1; font-weight: 700;
                  margin-top: 3px; }
-      .chip .d { font-size: 0.82rem; color: #8FAFBC; margin-top: 4px;
+      .chip .d { font-size: 0.82rem; color: #9DB0B8; margin-top: 4px;
                  line-height: 1.45; }
       .chip.warm { border-top-color: #FF6B6B; }
       .chip.cool { border-top-color: #1F7A99; }
@@ -895,9 +995,9 @@ ui <- page_navbar(
       .defrow { display: flex; gap: 14px; padding: 9px 0;
                 border-bottom: 1px solid rgba(22,87,107,0.55); }
       .defrow:last-child { border-bottom: none; }
-      .defrow .term { flex: 0 0 190px; color: #22D3EE; font-weight: 700;
+      .defrow .term { flex: 0 0 190px; color: #46C8D8; font-weight: 700;
                       font-size: 0.9rem; }
-      .defrow .desc { flex: 1; color: #DCEEF3; font-size: 0.92rem;
+      .defrow .desc { flex: 1; color: #E6EEF1; font-size: 0.92rem;
                       line-height: 1.55; }
 
       /* --- Guide tabs: one collapsed panel per control --- */
@@ -907,39 +1007,39 @@ ui <- page_navbar(
       .guide-bar .eqnote { flex: 1 1 22em; }
       .guide-toggle { flex: 0 0 auto; font-weight: 600; }
       .ggroup { margin-bottom: 18px; }
-      .ggroup-title { color: #22D3EE; font-weight: 700; font-size: 0.9rem;
+      .ggroup-title { color: #46C8D8; font-weight: 700; font-size: 0.9rem;
                       letter-spacing: 0.02em; margin: 0 0 8px 2px; }
-      .guide-acc .accordion-item { background: #072A36 !important;
-                                   border-color: #16576B !important; }
-      .guide-acc .accordion-button { background: #072A36 !important;
-                                     color: #DCEEF3 !important; font-weight: 400;
+      .guide-acc .accordion-item { background: #0E2027 !important;
+                                   border-color: #2A4A55 !important; }
+      .guide-acc .accordion-button { background: #0E2027 !important;
+                                     color: #E6EEF1 !important; font-weight: 400;
                                      padding: 10px 14px !important;
                                      border-bottom: none !important;
                                      box-shadow: none !important; }
       .guide-acc .accordion-button:not(.collapsed) {
-        background: #0B3140 !important; box-shadow: inset 3px 0 0 #22D3EE !important; }
-      .guide-acc .accordion-button:hover .gname { color: #22D3EE; }
-      .guide-acc .accordion-button:focus-visible { outline: 2px solid #22D3EE;
+        background: #13272F !important; box-shadow: inset 3px 0 0 #46C8D8 !important; }
+      .guide-acc .accordion-button:hover .gname { color: #46C8D8; }
+      .guide-acc .accordion-button:focus-visible { outline: 2px solid #46C8D8;
                                                    outline-offset: -2px; }
-      .guide-acc .accordion-body { background: #0B3140 !important; border: none !important;
-                                   border-top: 1px solid #16576B !important;
+      .guide-acc .accordion-body { background: #13272F !important; border: none !important;
+                                   border-top: 1px solid #2A4A55 !important;
                                    padding: 12px 16px 14px 17px; }
       .gtitle { display: flex; flex-direction: column; gap: 1px; }
-      .gname { font-weight: 700; color: #DCEEF3; font-size: 0.9rem;
+      .gname { font-weight: 700; color: #E6EEF1; font-size: 0.9rem;
                transition: color 0.15s ease; }
-      .ghint { color: #8FAFBC; font-size: 0.82rem; }
-      .gbody { font-size: 0.9rem; line-height: 1.6; color: #DCEEF3; max-width: 68ch; }
-      .gsrc { color: #8FAFBC; font-size: 0.8rem; font-style: italic;
+      .ghint { color: #9DB0B8; font-size: 0.82rem; }
+      .gbody { font-size: 0.9rem; line-height: 1.6; color: #E6EEF1; max-width: 68ch; }
+      .gsrc { color: #9DB0B8; font-size: 0.8rem; font-style: italic;
               margin-top: 8px; max-width: 68ch; }
-      .gref { font-size: 0.85rem; color: #BBD7E0; padding-left: 1.6em;
+      .gref { font-size: 0.85rem; color: #C8D9DF; padding-left: 1.6em;
               text-indent: -1.6em; margin-bottom: 6px; }
 
       /* --- Glowing headings: light moving through water. Cool colours only,
              because warm colours on this page are reserved for signals. --- */
       .glow { display: inline-block;
-              background-image: linear-gradient(100deg, #22D3EE 0%, #3DDC97 18%,
-                                #BDF4FF 36%, #22D3EE 50%, #3DDC97 68%,
-                                #BDF4FF 86%, #22D3EE 100%);
+              background-image: linear-gradient(100deg, #46C8D8 0%, #3DDC97 18%,
+                                #BDF4FF 36%, #46C8D8 50%, #3DDC97 68%,
+                                #BDF4FF 86%, #46C8D8 100%);
               background-size: 200% 100%;
               -webkit-background-clip: text; background-clip: text;
               color: transparent; -webkit-text-fill-color: transparent;
@@ -968,8 +1068,7 @@ ui <- page_navbar(
         });
         btn.textContent = anyClosed ? 'Collapse all' : 'Expand all';
       }")),
-    withMathJax(),                 # without this the $$...$$ render as plain text
-    div(class = "swam-subtitle", "Spatial Wastewater & Antimicrobial Monitor")
+    withMathJax()                  # without this the $$...$$ render as plain text
   ),
   
   # SECTION 1: INTRODUCTION
@@ -993,7 +1092,9 @@ ui <- page_navbar(
         actionButton("jump_spatial", "Spatial autocorrelation",
                      icon = bsicons::bs_icon("bullseye"), class = "btn-primary"),
         actionButton("jump_mgm",     "MGM explorer",
-                     icon = bsicons::bs_icon("diagram-3-fill"), class = "btn-primary")
+                     icon = bsicons::bs_icon("diagram-3-fill"), class = "btn-primary"),
+        actionButton("jump_conclusion", "Conclusion",
+                     icon = bsicons::bs_icon("check2-circle"), class = "btn-outline-info")
       )
     ),
 
@@ -1011,125 +1112,121 @@ ui <- page_navbar(
                 showcase = bsicons::bs_icon("bullseye"), theme = "danger")
     ),
 
+    ## Two columns that each run top to bottom, so the reading order is
+    ## left: why -> what data; right: aims -> how to use -> what is measured.
     layout_columns(
+      fill = FALSE,
       col_widths = c(7, 5),
 
-      card(
+      div(
+        card(
         glow_header("Why this study"),
         card_body(
-          class = "theory",
-          p("Water-based epidemiology (WBE) has emerged as a powerful tool in ",
-            "public health management, specifically after the COVID-19 pandemic. ",
-            "COVID-19 showed that an effective outbreak response requires fast and ",
-            "accurate detection, efficient allocation of resources to people in ",
-            "need, and the ability to react predictively rather than ",
-            "retrospectively."),
-          p("Clinical surveillance and WBE have the same objective but different ",
-            "ways of achieving it. Clinical surveillance records the state of an ",
-            "individual who has consented to testing. WBE measures specific ",
-            "biological markers shed by individuals through waste within a ",
-            "predefined area, which captures asymptomatic and untested people. ",
-            "The two are ", tags$b("complementary"), " tools in disease detection: ",
-            "WBE is inexpensive, non-invasive and less biased than clinical ",
-            "surveillance used alone, and together they improve the speed of ",
-            "disease detection and mapping. Its only real restriction is whether ",
-            "the disease of focus leaves a biological marker when shed -- the ",
-            "detection of polio in Gaza is one example."),
-          p("Spatial statistics shifts the viewpoint from where something is to ",
-            "why it may occur there. Demographic-based mapping connects physical ",
-            "location with the characteristics of the population present, treated ",
-            "as covariates. Elevation, for instance, was found to be associated ",
-            "with the distribution of cholera during the 2008-2009 epidemic in ",
-            "Harare, Zimbabwe."),
-          p("This report focuses on antimicrobial resistance (AMR): the process by ",
-            "which a microorganism survives despite the presence of an antibiotic. ",
-            "An estimated 4.95 million deaths were associated with bacterial AMR ",
-            "in 2019, of which 1.27 million were directly attributed to it -- ",
-            "placing AMR among the leading causes of death worldwide, ahead of ",
-            "both HIV/AIDS and malaria, with sub-Saharan Africa carrying the ",
-            "highest burden."),
-          p("AMR suits WBE for two reasons. It is ", tags$b("endemic and ",
-            "slow-moving"), ", so a relatively stable pattern can be estimated and ",
-            "evaluated; and its markers are ", tags$b("shed into wastewater"), ", ",
-            "which allows easy integration with existing wastewater-based ",
-            "surveillance.")
+        class = "theory",
+        p("Water-based epidemiology (WBE) has emerged as a powerful tool in ",
+        "public health management, specifically after the COVID-19 pandemic. ",
+        "COVID-19 showed that an effective outbreak response requires fast and ",
+        "accurate detection, efficient allocation of resources to people in ",
+        "need, and the ability to react predictively rather than ",
+        "retrospectively."),
+        p("Clinical surveillance and WBE have the same objective but different ",
+        "ways of achieving it. Clinical surveillance records the state of an ",
+        "individual who has consented to testing. WBE measures specific ",
+        "biological markers shed by individuals through waste within a ",
+        "predefined area, which captures asymptomatic and untested people. ",
+        "The two are ", tags$b("complementary"), " tools in disease detection: ",
+        "WBE is inexpensive, non-invasive and less biased than clinical ",
+        "surveillance used alone, and together they improve the speed of ",
+        "disease detection and mapping. Its only real restriction is whether ",
+        "the disease of focus leaves a biological marker when shed -- the ",
+        "detection of polio in Gaza is one example."),
+        p("Spatial statistics shifts the viewpoint from where something is to ",
+        "why it may occur there. Demographic-based mapping connects physical ",
+        "location with the characteristics of the population present, treated ",
+        "as covariates. Elevation, for instance, was found to be associated ",
+        "with the distribution of cholera during the 2008-2009 epidemic in ",
+        "Harare, Zimbabwe."),
+        p("This report focuses on antimicrobial resistance (AMR): the process by ",
+        "which a microorganism survives despite the presence of an antibiotic. ",
+        "An estimated 4.95 million deaths were associated with bacterial AMR ",
+        "in 2019, of which 1.27 million were directly attributed to it -- ",
+        "placing AMR among the leading causes of death worldwide, ahead of ",
+        "both HIV/AIDS and malaria, with sub-Saharan Africa carrying the ",
+        "highest burden."),
+        p("AMR suits WBE for two reasons. It is ", tags$b("endemic and ",
+        "slow-moving"), ", so a relatively stable pattern can be estimated and ",
+        "evaluated; and its markers are ", tags$b("shed into wastewater"), ", ",
+        "which allows easy integration with existing wastewater-based ",
+        "surveillance.")
         )
-      ),
-
-      card(
-        glow_header("The three aims"),
-        card_body(
-          div(class = "aim", tags$b("1. "),
-              "Investigate the significance of demographic factors through the ",
-              "use of mixed graphical models, and then connect those factors to ",
-              "both physical location and AMR markers."),
-          div(class = "aim", tags$b("2. "),
-              "Use spatial autocorrelation on these covariates to investigate ",
-              "which factors are spatially significant within KwaZulu-Natal."),
-          div(class = "aim", tags$b("3. "),
-              "Interpret what was gathered to be able to improve the ",
-              "effectiveness of public health intervention.")
-        )
-      )
-    ),
-
-    layout_columns(
-      col_widths = c(4, 4, 4),
-
-      card(
-        glow_header("Target pathogens and markers"),
-        card_body(
-          tags$ul(
-            tags$li(tags$b("Escherichia coli (EC). "),
-                    "Indicator organism for faecal-oral environmental ",
-                    "transmission, across nine sampling months."),
-            tags$li(tags$b("Klebsiella pneumoniae (KP). "),
-                    "Opportunistic pathogen associated with plasmid-mediated ",
-                    "multi-drug resistance."),
-            tags$li(tags$b("ESBL phenotype. "),
-                    "Enzymatic resistance conferring immunity to broad-spectrum ",
-                    "beta-lactam antibiotics.")
-          )
-        )
-      ),
-
-      card(
+        ),
+        card(
         glow_header("The data"),
         card_body(
-          p("A household survey conducted in KwaZulu-Natal in 2025. 162 ",
-            "households were sampled across seven study codes -- ARUE, ARUO, ",
-            "ARUT, ARUL, ARUS, ARUU and ARUF -- each individually geolocated, ",
-            "over a study area spanning roughly two kilometres in each ",
-            "direction. Alongside the survey responses, each household was ",
-            "tested over a period of up to nine months for the three AMR ",
-            "markers."),
-          p("The responses carry several measurement types at once: binary ",
-            "indicators, categorical demographic and sanitation responses, ",
-            "counts and continuous measurements. Typical correlation and ",
-            "regression tools assume a single type, and forcing the data into ",
-            "one would discard information and distort the associations being ",
-            "detected."),
-          p("That mixture is exactly why a mixed graphical model is required ",
-            "rather than a single-type network, and why each node in this app ",
-            "carries a declared type and level."),
-          uiOutput("lp_data_status")
+        p("A household survey conducted in KwaZulu-Natal in 2025. 162 ",
+        "households were sampled across seven study codes -- ARUE, ARUO, ",
+        "ARUT, ARUL, ARUS, ARUU and ARUF -- each individually geolocated, ",
+        "over a study area spanning roughly two kilometres in each ",
+        "direction. Alongside the survey responses, each household was ",
+        "tested over a period of up to nine months for the three AMR ",
+        "markers."),
+        p("The responses carry several measurement types at once: binary ",
+        "indicators, categorical demographic and sanitation responses, ",
+        "counts and continuous measurements. Typical correlation and ",
+        "regression tools assume a single type, and forcing the data into ",
+        "one would discard information and distort the associations being ",
+        "detected."),
+        p("That mixture is exactly why a mixed graphical model is required ",
+        "rather than a single-type network, and why each node in this app ",
+        "carries a declared type and level."),
+        uiOutput("lp_data_status")
+        )
         )
       ),
 
-      card(
+      div(
+        card(
+        glow_header("The three aims"),
+        card_body(
+        div(class = "aim", tags$b("1. "),
+        "Investigate the significance of demographic factors through the ",
+        "use of mixed graphical models, and then connect those factors to ",
+        "both physical location and AMR markers."),
+        div(class = "aim", tags$b("2. "),
+        "Use spatial autocorrelation on these covariates to investigate ",
+        "which factors are spatially significant within KwaZulu-Natal."),
+        div(class = "aim", tags$b("3. "),
+        "Interpret what was gathered to be able to improve the ",
+        "effectiveness of public health intervention.")
+        )
+        ),
+        card(
         glow_header("How to use this app"),
         card_body(
-          p(span(class = "step-num", "1"),
-            "Read the ", tags$b("Methodology"), " for the definitions and ",
-            "equations every result below is computed from."),
-          p(span(class = "step-num", "2"),
-            tags$b("MGM Explorer"), " answers aim 1 -- the conditional ",
-            "dependency network, refitted live as you change its settings."),
-          p(span(class = "step-num", "3"),
-            tags$b("Spatial Autocorrelation"), " answers aim 2 -- Moran's I, ",
-            "Geary's C and the LISA, under a weights matrix you choose."),
-          p(span(class = "step-num", "4"),
-            tags$b("Conclusion"), " answers aim 3, drawing the two together.")
+        p(span(class = "step-num", "1"),
+        "Read the ", tags$b("Methodology"), " for the definitions and ",
+        "equations every result below is computed from."),
+        p(span(class = "step-num", "2"),
+        tags$b("MGM Explorer"), " answers aim 1 -- the conditional ",
+        "dependency network, refitted live as you change its settings."),
+        p(span(class = "step-num", "3"),
+        tags$b("Spatial Autocorrelation"), " answers aim 2 -- Moran's I, ",
+        "Geary's C and the LISA, under a weights matrix you choose."),
+        p(span(class = "step-num", "4"),
+        tags$b("Conclusion"), " answers aim 3, drawing the two together.")
+        )
+        ),
+        card(
+        glow_header("Target markers"),
+        card_body(
+        ## Names only. Every descriptive claim was removed: nothing in this
+        ## app should assert something the report does not cite.
+        tags$ul(
+        tags$li(tags$i("Escherichia coli"), " (EC)"),
+        tags$li(tags$i("Klebsiella pneumoniae"), " (KP)"),
+        tags$li("ESBL phenotype")
+        )
+        )
         )
       )
     )
@@ -1144,6 +1241,7 @@ ui <- page_navbar(
              paste("The definitions, equations and estimation procedure behind",
                    "every number this app reports. Each tab corresponds to a",
                    "subsection of the written report.")),
+    sec_nav("Methodology"),
     navset_card_tab(
 
       nav_panel(
@@ -1155,6 +1253,7 @@ ui <- page_navbar(
           p("Spatial data are classified by how the locations, and the values at ",
             "those locations, are treated. Two types matter here."),
           layout_columns(
+      fill = FALSE,
             col_widths = c(6, 6),
             div(
               eqbox("Geostatistical",
@@ -1173,9 +1272,9 @@ ui <- page_navbar(
           ),
           hr(),
           h5("Tobler's first law of geography"),
-          div(style = paste("border-left:3px solid #22D3EE; padding:10px 0 10px 20px;",
+          div(style = paste("border-left:3px solid #46C8D8; padding:10px 0 10px 20px;",
                             "margin:6px 0 14px 0; font-size:1.06rem;",
-                            "color:#BBD7E0; font-style:italic;"),
+                            "color:#C8D9DF; font-style:italic;"),
               "\"Everything is related to everything else, but near things are ",
               "more related than distant things.\""),
           hr(),
@@ -1225,24 +1324,23 @@ ui <- page_navbar(
           hr(),
           h5("The spatial weights"),
           p("Every statistic below is conditional on \\(\\mathbf{W} = [w_{ij}]\\), ",
-            "with \\(w_{ii} = 0\\) throughout. The report states the general ",
-            "critical-distance form:"),
+            "with \\(w_{ii} = 0\\) throughout. Neighbours are the ",
+            "\\(k = 8\\) nearest households:"),
           eqbox("Equation (1)  |  Spatial weights",
-                "$$w_{ij} = \\begin{cases} 1, & 0 < \\lVert \\mathbf{s}_i - \\mathbf{s}_j \\rVert \\le d \\\\ 0, & \\text{otherwise} \\end{cases}$$",
-                "Rows are then standardised to sum to one."),
+                "$$w_{ij} = \\begin{cases} 1, & j \\in J_i \\\\ 0, & \\text{otherwise} \\end{cases} \\qquad w_{ii} = 0$$",
+                paste("J_i holds the k households nearest to i. The rule is directional,",
+                      "so W is symmetrised by averaging it with its transpose before the",
+                      "rows are standardised to sum to one.")),
           div(
             class = "alert note-warn",
-            tags$b("What the analysis actually uses. "),
-            "A distance band is not usable on this cohort. Moran's I decays ",
-            "monotonically with distance here, so choosing d at the first peak ",
-            "of the correlogram lands at 50-75 m and leaves 14 to 28 of the 162 ",
-            "households with no neighbours at all. The analysis therefore uses ",
-            "k = 8 nearest neighbours, symmetrised and row-standardised, with ",
-            "w_ii = 0 -- every household keeps a neighbourhood, and each ",
-            "neighbour carries weight 1/k. The distance-band and inverse-distance ",
-            "matrices are offered in the sidebar as the sensitivity check they ",
-            "are. The Methodology section of the report should define the ",
-            "k-nearest-neighbour rule as the primary one."
+            tags$b("Why not a distance band. "),
+            "The critical-distance rule is the textbook alternative, and it is ",
+            "not usable on this cohort. Moran's I decays monotonically with ",
+            "distance here, so choosing d at the first peak of the correlogram ",
+            "lands at 50-75 m and leaves 14 to 28 of the 162 households with no ",
+            "neighbours at all, and a local statistic on an empty neighbourhood ",
+            "is undefined. The distance-band and inverse-distance matrices are ",
+            "offered in the sidebar as the sensitivity check they are."
           ),
           hr(),
           h5("Moran's I"),
@@ -1466,11 +1564,12 @@ ui <- page_navbar(
   nav_panel(
     "Spatial Autocorrelation",
     icon = bsicons::bs_icon("bullseye"),
-    sec_head("Section 3  |  Research aim 2",
+    sec_head("Section 3  |  Research aim: where covariates cluster",
              "Spatial Autocorrelation",
              paste("Which covariates cluster in space, and where. Moran's I and",
                    "Geary's C globally, local indicators site by site, and the",
                    "weights matrix all of it is conditional on.")),
+    sec_nav("Spatial Autocorrelation"),
     layout_sidebar(
       sidebar = sidebar(
         width = 340,
@@ -1482,9 +1581,7 @@ ui <- page_navbar(
             selectInput(
               "sp_wtype", "Neighbourhood Definition:",
               choices = c("k nearest neighbours" = "knn",
-                          "Distance band"        = "dist",
-                          "Inverse distance"     = "idw",
-                          "Matrix built in 01b"  = "their"),
+                          "Distance band"        = "dist"),
               selected = "knn"
             ),
             conditionalPanel(
@@ -1492,21 +1589,9 @@ ui <- page_navbar(
               sliderInput("sp_k", "k (neighbours):", min = 2, max = 15, value = 8, step = 1)
             ),
             conditionalPanel(
-              "input.sp_wtype == 'dist' || input.sp_wtype == 'idw'",
+              "input.sp_wtype == 'dist'",
               sliderInput("sp_dband", "Band (metres):", min = 50, max = 1500,
                           value = 400, step = 50)
-            ),
-            conditionalPanel(
-              "input.sp_wtype == 'idw'",
-              sliderInput("sp_alpha", "Distance decay exponent:", min = 0.5, max = 3,
-                          value = 1, step = 0.5)
-            ),
-            conditionalPanel(
-              "input.sp_wtype != 'their'",
-              selectInput("sp_style", "Standardisation:",
-                          choices = c("Row (W)" = "W", "Binary (B)" = "B",
-                                      "Global (C)" = "C"),
-                          selected = "W")
             ),
             checkboxInput("sp_show_spatial",
                           "Include Site / density controls", value = FALSE)
@@ -1576,15 +1661,15 @@ ui <- page_navbar(
                   guide_row("Neighbourhood definition", "Which households count as neighbours",
                     tagList(
                       tags$b("k nearest neighbours"), " links each household to its k closest ",
-                      "households, so every household has neighbours. ",
+                      "households, so every household has neighbours, and is what the analysis ",
+                      "uses. ",
                       tags$b("Distance band"), " links every pair closer than the band, so dense ",
                       "areas get many neighbours and remote households may get none. ",
-                      tags$b("Inverse distance"), " uses the same band but weights each neighbour ",
-                      "by its distance, so closer households count for more. ",
-                      tags$b("Matrix built in 01b"), " uses the 8-nearest-neighbour matrix from ",
-                      "the cleaning pipeline, made symmetric and row-standardised; for Geary's C, ",
-                      "the LISA and Gi* the app uses the equivalent symmetric 8-nearest-neighbour list."),
-                    "Tobler (1970) for the principle that nearer households should carry more weight. The four options themselves are app behaviour."),
+                      "Both are symmetrised before use: a k-nearest-neighbour graph is ",
+                      "directed, so the indicator matrix is averaged with its transpose before the ",
+                      "rows are standardised, which is the definition Section 2.1 of the report now ",
+                      "gives and the matrix the cleaning pipeline builds."),
+                    "Tobler (1970) for the principle that nearer households should carry more weight. Both options themselves are app behaviour."),
                   guide_row("k (neighbours)", "How many neighbours each household gets",
                     tagList(
                       "Only with k nearest neighbours. Under row standardisation each neighbour ",
@@ -1592,24 +1677,9 @@ ui <- page_navbar(
                       "and a smaller k keeps it local.")),
                   guide_row("Band (metres)", "How far away a neighbour can be",
                     tagList(
-                      "Distance band and inverse distance only. Households closer than this are ",
+                      "Distance band only. Households closer than this are ",
                       "neighbours. A small band can leave some households with no neighbours at all; ",
                       "the Spatial Weights tab reports how many under 'Isolated units'.")),
-                  guide_row("Distance decay exponent", "How fast weight falls with distance",
-                    tagList(
-                      "Inverse distance only. Each neighbour's weight is 1 / distance raised to this ",
-                      "power (distances under 1 m are floored at 1 m, because some households share ",
-                      "coordinates). A larger exponent lets the nearest households dominate; a smaller ",
-                      "one spreads the weight more evenly across the band.")),
-                  guide_row("Standardisation", "How the weights are scaled",
-                    tagList(
-                      tags$b("Row (W)"), " rescales each household's weights to sum to 1, so every ",
-                      "household carries the same total weight and its neighbours are averaged. ",
-                      tags$b("Binary (B)"), " gives every neighbour link a weight of 1, so households ",
-                      "with more neighbours carry more total weight. ",
-                      tags$b("Global (C)"), " gives every link the same weight, scaled so the weights ",
-                      "across the whole study area sum to n. Hidden for the 01b matrix, which is ",
-                      "already row-standardised.")),
                   guide_row("Include Site / density controls", "Adds the built-in spatial checks",
                     tagList(
                       "Adds the site indicators and neighbour density to the global table and to ",
@@ -1630,7 +1700,7 @@ ui <- page_navbar(
                       "2 / (replicates + 1), about 0.002 at 999 and 0.0002 at 9999. For the LISA, each ",
                       "household's own value is held fixed and only the other n - 1 are reshuffled. ",
                       "All replicates for the global statistics are computed as a single matrix ",
-                      "product. Gi* uses at most 999."),
+                      "product."),
                     "Anselin (1995) for holding each household's own value fixed in the LISA permutation; Amgalan et al. (2022) for evaluating the statistic as one matrix product."),
                   guide_row("Recompute", "When the global table updates",
                     tagList(
@@ -1648,7 +1718,7 @@ ui <- page_navbar(
                       tags$b("q < 0.05 (BH)"), " applies the Benjamini-Hochberg correction across all ",
                       "the local tests; in this analysis no household survives it, so the map is ",
                       "exploratory: it points to candidate neighbourhoods rather than confirming them. ",
-                      "This control does not affect the Gi* or raw-value layers."),
+                      "This control does not affect the raw-value layer."),
                     "Anselin (1995), who treats multiple comparisons for local statistics as an open problem. The Benjamini-Hochberg correction has no source in the reference list."),
                   guide_row("Map layer", "What the map colours show",
                     tagList(
@@ -1656,9 +1726,8 @@ ui <- page_navbar(
                       "neighbours' average, equation (4): High-High and Low-Low are clusters of similar ",
                       "values, High-Low and Low-High are households unlike their neighbours. The two ",
                       "negative quadrants stay on the map rather than being folded into a hotspot summary. ",
-                      tags$b("Getis-Ord Gi*"), " shows hot and cold spots; faded points have p of 0.05 ",
-                      "or more. ", tags$b("Raw values"), " shows the covariate itself, with no test."),
-                    "Anselin (1995) for the LISA; Hu et al. (2020) for keeping the negative quadrants; Mtshawu et al. (2023), who pair Moran's I with Gi* maps.")
+                      tags$b("Raw values"), " shows the covariate itself, with no test."),
+                    "Anselin (1995) for the LISA; Hu et al. (2020) for keeping the negative quadrants.")
                 ),
                 guide_refs(
                   guide_ref("Amgalan, A., Mujica-Parodi, L. R. and Skiena, S. S. (2022). Fast spatial ",
@@ -1692,6 +1761,7 @@ ui <- page_navbar(
               )
             ),
             layout_columns(
+      fill = FALSE,
               col_widths = c(5, 7),
               DTOutput("sp_gtab"),
               card(
@@ -1706,6 +1776,7 @@ ui <- page_navbar(
           icon = bsicons::bs_icon("geo-fill"),
           card_body(
             layout_columns(
+      fill = FALSE,
               col_widths = c(4, 3, 5),
               uiOutput("sp_lvar_ui"),
               selectInput("sp_lsig", "Significance:",
@@ -1715,21 +1786,11 @@ ui <- page_navbar(
                           selected = "p05"),
               radioButtons("sp_llayer", "Map layer:", inline = TRUE,
                            choices = c("LISA quadrants" = "lisa",
-                                       "Getis-Ord Gi*"  = "gstar",
                                        "Raw values"     = "raw"))
             ),
-            div(class = "sp-basemap",
-                selectInput("sp_lbase", "Basemap (no API key required):",
-                            width = "320px",
-                            choices = c("Dark canvas (Esri)"        = "esridark",
-                                        "Dark (OpenStreetMap)"      = "osmdark",
-                                        "Light grey (Esri)"         = "grey",
-                                        "Street (OpenStreetMap)"    = "osm",
-                                        "Terrain (OpenTopoMap)"     = "topo",
-                                        "Satellite (Esri)"          = "image"),
-                            selected = "esridark")),
             leafletOutput("sp_lmap", height = "460px"),
             layout_columns(
+      fill = FALSE,
               col_widths = c(7, 5),
               card(
                 class = "mgm-card",
@@ -1773,6 +1834,7 @@ ui <- page_navbar(
               )
             ),
             layout_columns(
+      fill = FALSE,
               col_widths = c(6, 6),
               card(
                 class = "mgm-card",
@@ -1804,11 +1866,12 @@ ui <- page_navbar(
   nav_panel(
     "MGM Explorer",
     icon = bsicons::bs_icon("diagram-3-fill"),
-    sec_head("Section 4  |  Research aim 1",
+    sec_head("Section 4  |  Research aim: how covariates relate",
              "Mixed Graphical Model Explorer",
              paste("Conditional dependencies between covariates of different",
                    "measurement types. Every control in the sidebar refits the",
                    "model rather than redrawing a cached one.")),
+    sec_nav("MGM Explorer"),
     layout_sidebar(
       sidebar = sidebar(
         width = 340,
@@ -2110,6 +2173,7 @@ ui <- page_navbar(
             ),
             
             layout_columns(
+      fill = FALSE,
               col_widths = c(6, 6),
               selectInput("mgm_i1", "Node A", choices = NULL),
               selectInput("mgm_i2", "Node B", choices = NULL)
@@ -2169,6 +2233,7 @@ ui <- page_navbar(
              "Conclusion",
              paste("What the two analyses say together, and what the limits of",
                    "the design are.")),
+    sec_nav("Conclusion"),
     layout_column_wrap(
       width = 1,
       card(
@@ -2224,33 +2289,29 @@ server <- function(input, output, session) {
 
   sp_wcfg <- reactive({
     req(SP_OK)
-    sty <- input$sp_style %|z|% "W"
+    ## Row standardisation throughout, so that the spatial lag is the MEAN of
+    ## the neighbouring values and every household contributes equally however
+    ## many neighbours it has. Section 2.1 of the report states this once; the
+    ## binary and globally standardised alternatives were a control nothing in
+    ## the analysis used, and explaining three conventions to justify one is
+    ## not a good trade against a ten-page limit.
     switch(input$sp_wtype %|z|% "knn",
-      knn  = list(type = "knn",  k = input$sp_k %|z|% SPB$k, style = sty),
-      dist = list(type = "dist", d = input$sp_dband %|z|% 400, style = sty),
-      idw  = list(type = "idw",  d = input$sp_dband %|z|% 400,
-                  alpha = input$sp_alpha %|z|% 1, style = sty),
-      their = NULL)
+      knn  = list(type = "knn",  k = input$sp_k %|z|% SPB$k, style = "W"),
+      dist = list(type = "dist", d = input$sp_dband %|z|% 400, style = "W"))
   })
 
-  # Either build the weights, or use the matrix 01b already made.
+  # Weights are always built here. make_listw() now symmetrises by averaging,
+  # so the k = 8 default reproduces the matrix the cleaning pipeline builds
+  # exactly; the separate "01b matrix" option was a duplicate and has gone.
   sp_Wmat <- reactive({
     req(SP_OK)
-    if (identical(input$sp_wtype %|z|% "knn", "their")) SPB$W_01b
-    else listw_to_W(do.call(make_listw, c(list(coords = SPB$coords), sp_wcfg())))
+    listw_to_W(do.call(make_listw, c(list(coords = SPB$coords), sp_wcfg())))
   })
 
-  # Geary, the LISA and Gi* need a listw object. 01b's matrix is a plain
-  # matrix, so for that option the nearest spdep equivalent stands in.
+  # Geary and the LISA need a listw object.
   sp_lw <- reactive({
     req(SP_OK)
-    if (identical(input$sp_wtype %|z|% "knn", "their")) {
-      spdep::nb2listw(
-        spdep::make.sym.nb(spdep::knn2nb(spdep::knearneigh(SPB$coords, k = SPB$k))),
-        style = "W", zero.policy = TRUE)
-    } else {
-      do.call(make_listw, c(list(coords = SPB$coords), sp_wcfg()))
-    }
+    do.call(make_listw, c(list(coords = SPB$coords), sp_wcfg()))
   })
 
   sp_nsim <- reactive(as.integer(input$sp_nsim %|z|% "9999"))
@@ -2324,10 +2385,10 @@ server <- function(input, output, session) {
                      p05 = li$p     < 0.05,
                      p01 = li$p     < 0.01)
     li$sig[is.na(li$sig)] <- FALSE
-    gs <- try(getis_gstar(SPB$X[[v]], lw, nsim = min(sp_nsim(), 999), seed = 3),
-              silent = TRUE)
-    list(li = li, gs = if (inherits(gs, "try-error")) NULL else gs,
-         I = moran_I(SPB$X[[v]], lw))
+    ## Getis-Ord Gi* is not computed: the report defines Moran's I, Geary's C
+    ## and the local Moran only, and a statistic the methodology never defines
+    ## has no place on the map.
+    list(li = li, I = moran_I(SPB$X[[v]], lw))
   })
 
   output$sp_lmap <- renderLeaflet({
@@ -2335,14 +2396,7 @@ server <- function(input, output, session) {
     L <- sp_lisa(); li <- L$li; v <- input$sp_lvar
     dd <- data.frame(lon = SPB$lonlat[, 1], lat = SPB$lonlat[, 2],
                      site = SPB$site_group)
-    if (identical(input$sp_llayer, "gstar") && !is.null(L$gs)) {
-      gg  <- L$gs
-      pal <- colorNumeric(PAL_DIV(64),
-                          domain = c(-max(abs(gg$Gstar)), max(abs(gg$Gstar))))
-      cols <- pal(gg$Gstar); opac <- ifelse(gg$p < 0.05, 0.95, 0.35)
-      lab  <- sprintf("<b>Site: </b>%s<br><b>Gi*: </b>%.2f<br><b>p: </b>%.3f",
-                      dd$site, gg$Gstar, gg$p)
-    } else if (identical(input$sp_llayer, "raw")) {
+    if (identical(input$sp_llayer, "raw")) {
       x   <- SPB$X[[v]]
       pal <- colorNumeric(PAL_DIV(64), domain = range(x))
       cols <- pal(x); opac <- 0.9
@@ -2354,36 +2408,15 @@ server <- function(input, output, session) {
       lab  <- sprintf("<b>Site: </b>%s<br><b>Quadrant: </b>%s<br><b>I_i: </b>%.2f<br><b>p: </b>%.3f<br><b>q: </b>%.3f",
                       dd$site, li$quadrant, li$Ii, li$p, li$q_BH)
     }
-    ## BASEMAP. CartoDB.DarkMatter was withdrawn from keyless use in August
-    ## 2026: the tiles still load, but they arrive stamped
-    ## "API KEY REQUIRED / carto.com/basemaps/apikey". Every option below
-    ## serves tiles without a key, so the watermark cannot come back. Two of
-    ## them are dark, to keep the map in the same register as the rest of the
-    ## dashboard: Esri's dark canvas, and plain OpenStreetMap inverted in CSS
-    ## (class swam-dark-tiles). The CSS filter is applied to the tile pane
-    ## alone, so the markers keep the LISA colours exactly as specified.
-    ESRI_ATTR <- "Tiles &copy; Esri"
-    m <- leaflet(dd)
-    m <- switch(input$sp_lbase %|z|% "esridark",
-      esridark = addTiles(m, urlTemplate = paste0(
-                   "https://server.arcgisonline.com/ArcGIS/rest/services/",
-                   "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
-                   attribution = ESRI_ATTR,
-                   options = tileOptions(maxZoom = 16)),
-      osmdark  = addTiles(m, options = tileOptions(className = "swam-dark-tiles")),
-      grey     = addProviderTiles(m, providers$Esri.WorldGrayCanvas),
-      osm      = addTiles(m),
-      topo     = addProviderTiles(m, providers$OpenTopoMap),
-      image    = addProviderTiles(m, providers$Esri.WorldImagery),
-      addTiles(m, options = tileOptions(className = "swam-dark-tiles")))
-    dark_base  <- (input$sp_lbase %|z|% "esridark") %in%
-                    c("esridark", "osmdark", "image")
-    ## rim contrasts with the BASEMAP, not with the fill: on 162 points over
-    ## seven clustered sites the rim is what separates overlapping markers
-    stroke_col <- if (dark_base) "#EAF6FA" else "#0B2027"
-    m <- m %>%
+    ## BASEMAP. Fixed: plain OpenStreetMap tiles, darkened by a CSS filter on
+    ## the tile pane (class swam-dark-tiles). OSM is community-run and needs no
+    ## API key, so the "API KEY REQUIRED" watermark that CartoDB.DarkMatter
+    ## started stamping in August 2026 cannot come back. The filter touches the
+    ## tiles only, so the LISA colours on the markers are exactly as specified.
+    m <- leaflet(dd) %>%
+      addTiles(options = tileOptions(className = "swam-dark-tiles")) %>%
       addCircleMarkers(lng = ~lon, lat = ~lat, radius = 6, stroke = TRUE,
-                       weight = 1.2, color = stroke_col, fillColor = cols,
+                       weight = 1.2, color = "#EAF6FA", fillColor = cols,
                        fillOpacity = opac, popup = lab)
     if (identical(input$sp_llayer, "lisa")) {
       m <- m %>% addLegend("bottomright", colors = c(unname(PAL_LISA), PAL_NS),
@@ -2916,7 +2949,7 @@ server <- function(input, output, session) {
     col <- function(x) if (x) "#3DDC97" else "#FFC15E"
     row <- function(lab, x, note)
       div(style = paste0("color:", col(x), "; font-size:0.88rem; margin-top:6px;"),
-          ok(x), " ", tags$b(lab), tags$span(style = "color:#8FAFBC;", paste0("  ", note)))
+          ok(x), " ", tags$b(lab), tags$span(style = "color:#9DB0B8;", paste0("  ", note)))
     csv <- !is.null(find_app_file(DATA_FILE))
     tagList(
       hr(),
@@ -2925,8 +2958,8 @@ server <- function(input, output, session) {
       row("Spatial results", SP_OK,
           if (SP_OK) paste(length(SPB$cov_vars), "covariates") else "not built"),
       if (length(BUILD_LOG))
-        div(style = "color:#8FAFBC; font-size:0.8rem; margin-top:10px; line-height:1.5;",
-            tags$b(style = "color:#22D3EE;", "Built this session:"), tags$br(),
+        div(style = "color:#9DB0B8; font-size:0.8rem; margin-top:10px; line-height:1.5;",
+            tags$b(style = "color:#46C8D8;", "Built this session:"), tags$br(),
             HTML(paste(BUILD_LOG, collapse = "<br/>")))
     )
   })
@@ -2935,6 +2968,14 @@ server <- function(input, output, session) {
   observeEvent(input$jump_method,  nav_select("main_nav", "Methodology"))
   observeEvent(input$jump_spatial, nav_select("main_nav", "Spatial Autocorrelation"))
   observeEvent(input$jump_mgm,     nav_select("main_nav", "MGM Explorer"))
+  observeEvent(input$jump_conclusion, nav_select("main_nav", "Conclusion"))
+
+  ## One observer per ordered pair of sections, for the sec_nav() button rows.
+  for (.a in SECTIONS) for (.b in setdiff(SECTIONS, .a)) local({
+    from <- .a; to <- .b
+    observeEvent(input[[paste0("go_", sec_id(from), "_", sec_id(to))]],
+                 nav_select("main_nav", to), ignoreInit = TRUE)
+  })
 
 }
 
