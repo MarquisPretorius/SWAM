@@ -22,6 +22,11 @@ APP_STRAP <- "Conditional dependencies in household antimicrobial resistance"
 APP_TITLE <- paste("Spatial variable selection in mixed graphical models:",
                    "antimicrobial resistance in KwaZulu-Natal")
 
+# Google Drive folder holding the research report, this application and the
+# analysis pipeline. Linked from the Conclusion.
+DRIVE_URL <- paste0("https://drive.google.com/drive/folders/",
+                    "13wyl00xWugSgKT3GEJWv4XqrJPsl2jTd?usp=drive_link")
+
 MGM_SEED     <- 20260913L
 MGM_CV_FOLDS <- 10L
 
@@ -1129,10 +1134,12 @@ sec_nav <- function(current) {
 }
 
 sec_head <- function(eyebrow, title, lede = NULL) {
-  div(class = "sec-head",
-      div(class = "eyebrow", eyebrow),
-      tags$h2(class = "glow", title),
-      if (!is.null(lede)) p(class = "lede", lede))
+  div(class = "sec-head-row",
+      div(class = "sec-head",
+          div(class = "eyebrow", eyebrow),
+          tags$h2(class = "glow", title),
+          if (!is.null(lede)) p(class = "lede", lede)),
+      up_badge(96))
 }
 
 # --- UI ----------------------------------------------------------------------
@@ -1240,6 +1247,8 @@ ui <- page_navbar(
       .hero-main { flex: 1 1 auto; min-width: 0; }
       .card-subhead { color: #4CC98A; font-weight: 700; font-size: 1rem;
                       margin: 20px 0 6px 0; }
+      .linkhint { color: #6FB894; font-size: 0.8rem; margin-top: 12px;
+                  word-break: break-all; }
       .up-badge { flex: 0 0 auto; background: #FFFFFF; border-radius: 50%;
                   padding: 10px; border: 2px solid #2A4A38;
                   box-shadow: 0 2px 16px rgba(0,0,0,0.45); line-height: 0; }
@@ -1552,6 +1561,24 @@ ui <- page_navbar(
               tags$li("ESBL phenotype")
             )
           )
+        )
+      )
+    ),
+
+    layout_column_wrap(
+      width = 1,
+      card(
+        glow_header("Report, code and data pipeline"),
+        card_body(
+          p("The full submission is kept in a single folder on Google Drive: the ",
+            "research report, the source of this application, and the analysis ",
+            "pipeline that cleans the survey data and fits the model read into ",
+            "the MGM Explorer."),
+          tags$a(href = DRIVE_URL, target = "_blank", rel = "noopener",
+                 class = "btn btn-primary",
+                 bsicons::bs_icon("folder2-open"),
+                 " Open the final submission folder"),
+          div(class = "linkhint", DRIVE_URL)
         )
       )
     )
@@ -2019,11 +2046,7 @@ ui <- page_navbar(
   nav_panel(
     "Conclusion",
     icon = bsicons::bs_icon("check2-circle"),
-    div(
-      class = "sec-head-row",
-      sec_head("Section 5  |  Synthesis", "Conclusion"),
-      up_badge(96)
-    ),
+    sec_head("Section 5  |  Synthesis", "Conclusion"),
     sec_nav("Conclusion"),
     layout_column_wrap(
       width = 1,
